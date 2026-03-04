@@ -21,6 +21,10 @@ static vec2 mouse_world;
 static vec2 camera = {0, 0};
 static float zoom = 1.0f;
 
+static bool is_panning = false;
+static vec2 pan_pivot_mouse;
+static vec2 pan_pivot_camera;
+
 static inline vec2 screen_to_world(vec2 screen)
 {
 	return (vec2){
@@ -63,10 +67,21 @@ void event(const sapp_event *e)
 		mouse_screen.x = e->mouse_x;
 		mouse_screen.y = e->mouse_y;
 		mouse_world = screen_to_world(mouse_screen);
+
+		if (is_panning) {
+			camera.x = pan_pivot_camera.x + (pan_pivot_mouse.x - mouse_screen.x)/zoom;
+			camera.y = pan_pivot_camera.y + (mouse_screen.y - pan_pivot_mouse.y)/zoom;
+		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
+		if (e->mouse_button == SAPP_MOUSEBUTTON_MIDDLE) {
+			is_panning = true;
+			pan_pivot_mouse = mouse_screen;
+			pan_pivot_camera = camera;
+		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_UP:
+		is_panning = is_panning && e->mouse_button != SAPP_MOUSEBUTTON_MIDDLE;
 		break;
 	case SAPP_EVENTTYPE_MOUSE_SCROLL:
 		float ratio = (1 + zoomFrac * e->scroll_y);
@@ -86,7 +101,10 @@ void frame(void)
 	float dpi = sapp_dpi_scale();
 
 	glViewport(0, 0, screen_width, screen_height);
-	glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+	if (is_panning)
+		glClearColor(1, 1, 1, 1.0f);
+	else
+		glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
 	nvgBeginFrame(vg, screen_width/dpi, screen_height/dpi, dpi);
