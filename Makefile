@@ -9,6 +9,7 @@ CFLAGS = -Wall -I$(VENDOR_DIR)
 
 ifeq ($(BUILD), RELEASE)
 	CFLAGS += -O2
+	LDFLAGS = -s
 else
 	CFLAGS += -g -O0
 endif
