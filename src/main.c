@@ -10,7 +10,7 @@
 #include <nanovg/nanovg_gl.h>
 
 #define PFH_IMPLEMENTATION
-#include <perfect-freehand-c/perfect_freehand.h>
+#include <perfect-freehand/pfh.h>
 
 #include "ds.h"
 
