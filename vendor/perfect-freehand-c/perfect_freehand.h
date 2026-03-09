@@ -5,19 +5,18 @@ typedef struct { float x, y; } pfh_vec2;
 typedef struct { pfh_vec2 coord; float pressure; } pfh_point;
 typedef float (*pfh_easing_fn)(float);
 
-// defaults: streamline = 0.5, size = 16, last: is_complete = false;
 typedef struct {
-	float size;
-	float thinning;
-	float streamline;
-	float smoothing;
-	pfh_easing_fn easing; // Leave null to default to pfh_ease
-	bool simulate_pressure;
-	bool is_complete;
+	float size; // 16
+	float thinning; // .5
+	float streamline; // .5
+	float smoothing; // .5
+	pfh_easing_fn easing; // Set NULL to default to pfh_ease
+	bool simulate_pressure; // true
+	bool is_complete; // false
 	struct {
-		bool cap;
+		bool cap; // true
 		float taper;
-		pfh_easing_fn easing; // Leave null to default to pfh_ease_start/end
+		pfh_easing_fn easing; // Set NULL to default to pfh_ease_start/end
 	} start, end;
 	bool last;
 } pfh_stroke_opts;
@@ -29,21 +28,15 @@ typedef struct pfh_stroke_point {
 	float running_length;
 } pfh_stroke_point;
 
-typedef struct {
-	size_t capacity;
-	size_t len;
-	pfh_vec2 *elems;
-} pfh_vec2_buff;
-
-typedef struct {
-	size_t capacity;
-	size_t len;
-	pfh_stroke_point *elems;
-} pfh_stroke_point_buff;
-
-void pfh_get_stroke(pfh_vec2_buff *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts);
-void pfh_get_stroke_points(pfh_stroke_point_buff *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts);
-void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, size_t *dest_capacity, const pfh_stroke_point_buff *stroke_pts, const pfh_stroke_opts *opts);
+size_t pfh_get_stroke(pfh_vec2 dest[], size_t dest_max, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts);
+size_t pfh_get_stroke_points(pfh_stroke_point dest[], size_t dest_max, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts);
+size_t pfh_get_stroke_outline_points(pfh_vec2 dest[], size_t dest_max, const pfh_stroke_point stroke_pts[], size_t stroke_pts_len, const pfh_stroke_opts *opts);
+static inline size_t pfh_calc_stroke_points_max(size_t pts_len) { return pts_len + 1; }
+static inline size_t pfh_calc_stroke_outline_points_max(size_t pts_len, const pfh_stroke_opts *opts)
+{ 
+	size_t total = 2*pfh_calc_stroke_points_max(pts_len);
+	return total;
+}
 
 #ifdef PFH_IMPLEMENTATION
 #include <math.h>
@@ -55,6 +48,7 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, size_t *dest_capacity, c
 #define PFH_MIN_STREAMLINE_T 0.15
 #define PFH_STREAMLINE_T_RANGE 0.85
 #define PFH_START_CAP_SEGMENTS 13
+#define PFH_END_CAP_SEGMENTS 13
 #define PFH_CORNER_CAP_SEGMENTS 13
 #define PFH_RATE_OF_PRESSURE_CHANGE 0.275
 #define PFH_MIN_RADIUS 0.01
@@ -136,20 +130,19 @@ static inline pfh_vec2 pfh_vec2_rot_around(pfh_vec2 A, pfh_vec2 C, float r)
 	return pfh_vec2_add(n, C);
 }
 
-//TODO
-void pfh_get_stroke(pfh_vec2_buff *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts)
+size_t pfh_get_stroke(pfh_vec2 dest[], size_t dest_max, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts)
 {
 	pfh_get_stroke_points(NULL, 0, pts, pts_len, opts);
-	getStrokeOutlinePoints();
+	pfh_get_stroke_outline_points();
 	return 0;
 }
 
 /**
  * @brief Get an array of points as objects with an adjusted point, pressure, vector, distance, and running_length.
  */
-void pfh_get_stroke_points(pfh_stroke_point_buff *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts)
+size_t pfh_get_stroke_points(pfh_stroke_point dest[], size_t dest_max, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts)
 {
-	if (pts_len == 0 || dest->capacity < 1)
+	if (pts_len == 0 || dest_max < 1)
 		return;
 
 	// interpolation level between points.
@@ -161,28 +154,28 @@ void pfh_get_stroke_points(pfh_stroke_point_buff *dest, const pfh_point pts[], s
 	// fix urself, i'm not allocating shi
 	*/
 
-	dest->len = 0; // reset (maybe provide options to no reset?)
-	pfh_buff_push(dest, ((pfh_stroke_point){
+	size_t dest_len = 0;
+	dest[dest_len++] = (pfh_stroke_point){
 		.point = pts[0],
 		.vector = {1, 1},
 		.distance = 0,
 		.running_length = 0,
-	}));
+	};
 
 	bool reached_min_len = false;
 	float running_length = 0;
 
 	const max = pts_len - 1;
-	for (int i = 1; i < pts_len && dest->len < dest->capacity; i++) {
-		pfh_stroke_point *prev = dest + dest->len - 1;
+	for (int i = 1; i < pts_len && dest_len < dest_max; i++) {
+		pfh_stroke_point *prev = dest + dest_len - 1;
 		pfh_point point = (opts->is_complete && i == max) ?
 			pts[pts_len-1] : // just add last point. otherwise, interpolate a new point with t
-			(pfh_point){ pfh_vec2_lrp(prev->point.coord, stroke_pts[i].coord, t), stroke_pts[i].pressure };
+			(pfh_point){ pfh_vec2_lrp(prev->point.coord, pts[i].coord, t), pts[i].pressure };
 
 		if (pfh_vec2_equal(prev->point.coord, point.coord)) 
 			continue;
 
-		float dist = pfh_vec2_dist(point.coord, stroke_pts[i].coord);
+		float dist = pfh_vec2_dist(point.coord, pts[i].coord);
 		running_length += dist;
 
 		// Avoid noise
@@ -195,16 +188,16 @@ void pfh_get_stroke_points(pfh_stroke_point_buff *dest, const pfh_point pts[], s
 		// Create a new pfh_stroke_point (it will be the new "previous" one).
 		pfh_vec2 vec_diff = pfh_vec2_sub(prev->point.coord, point.coord);
 
-		pfh_buff_push(dest, ((pfh_stroke_point){
+		dest[dest_len++] = (pfh_stroke_point){
 			.point = point,
 			.vector = uni(vec_diff),
 			.distance = dist,
 			running_length,
-		}));
+		};
 	}
 
-	dest->elems[0].vector = dest->len > 1 ? dest->elems[1].vector : (pfh_vec2){0, 0};
-	return;
+	dest[0].vector = dest_len > 1 ? dest[1].vector : (pfh_vec2){0, 0};
+	return dest_len;
 }
 
 static inline size_t pfh_draw_dot(pfh_vec2 dest[], size_t max, pfh_vec2 center, float radius)
@@ -343,21 +336,13 @@ static inline float pfh_get_stroke_radius(float size, float thinning, float pres
  *   end = {},
  *   last: is_complete = false,
  */
-void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, size_t *dest_capacity, const pfh_stroke_point stroke_pts[], size_t stroke_pts_len, const pfh_stroke_opts *opts)
+size_t pfh_get_stroke_outline_points(
+	pfh_vec2 dest[], 
+	size_t dest_max, 
+	const pfh_stroke_point stroke_pts[], 
+	size_t stroke_pts_len,
+	const pfh_stroke_opts *opts)
 {
-	//   const {
-	//	 size = 16,
-	//	 smoothing = 0.5,
-	//	 thinning = 0.5,
-	//	 simulate_pressure: shouldSimulatePressure = true,
-	//	 easing = (t) => t,
-	//	 start = {},
-	//	 end = {},
-	//	 last: is_complete = false,
-	//   } = options
-	// const { cap: capStart = true, easing: taperStartEase = (t) => t * (2 - t) } = start;
-	// const { cap: opts->end.cap = true, easing: taperEndEase = (t) => --t * t * t + 1 } = end;
-
 	if (stroke_pts_len == 0 || opts->size <= 0)
 		return 0;
 
@@ -476,8 +461,6 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, size_t *dest_capacity, c
 
 		if (pt_is_sharp_corner || next_pt_is_sharp_corner) {
 			// It's a sharp corner. Draw a rounded cap and move on to the next point
-
-			// Use mutable operations for the offset calculation
 			pfh_vec2 offset = pfh_vec2_per(prev_vec);
 			offset = pfh_vec2_mul_s(offset, radius);
 
@@ -571,9 +554,9 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, size_t *dest_capacity, c
 		if (taper_start || (taper_end && pts_len == 1)) {
 			// The start point is tapered, noop
 		} else if (opts->start.cap) {
-			start_cap.push(...drawRoundStartCap(first_point, right_pts[0], START_CAP_SEGMENTS)):
+			start_cap.push(pfh_draw_round_start_cap(first_point, right_pts[0], PFH_START_CAP_SEGMENTS));
 		} else {
-			start_cap.push(...drawFlatStartCap(first_point, left_pts[0], right_pts[0]));
+			start_cap.push(pfh_draw_flat_start_cap(first_point, left_pts[0], right_pts[0]));
 		}
 
 		// Draw end cap (unless tapered)
@@ -583,7 +566,7 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, size_t *dest_capacity, c
 			// Tapered end - push the last point to the line
 			end_cap.push(last_point);
 		} else if (opts->end.cap) {
-			end_cap.push(...drawRoundEndCap(last_point, direction, radius, END_CAP_SEGMENTS));
+			end_cap.push(...drawRoundEndCap(last_point, direction, radius, PFH_END_CAP_SEGMENTS));
 		} else {
 			end_cap.push(...drawFlatEndCap(last_point, direction, radius));
 		}
