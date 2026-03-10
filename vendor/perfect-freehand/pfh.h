@@ -76,7 +76,7 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 
 #define PFH_BUFF_GROW_FACTOR 2
 #define PFH_BUFF_INIT_CAPACITY 64
-#define pfh_max(a, b) ( a > b ? a : b )
+#define pfh_max(a, b) ( (a) > (b) ? (a) : (b) )
 #define pfh_buff_reserve(buff, total)                                      \
         do                                                                 \
         {                                                                  \
@@ -192,20 +192,18 @@ void pfh_get_stroke_points(pfh_stroke_point_buff *dest, const pfh_point pts[], s
 	if (pts_len == 0)
 		return;
 
-	// interpolation level between points.
 	const float t = PFH_MIN_STREAMLINE_T + (1 - opts->streamline) * PFH_STREAMLINE_T_RANGE;
 
 	/*
-	// In the original, this was a part that fixes weirdness with tapering 
-	// start & end when there's only two points by interpolates new ones.
-	// fix urself, i'm not allocating shi
-	*/
+	 * In the original, this was a part that fixes weirdness with tapering 
+	 * start & end when there's only two points by interpolates new ones.
+	 */
 
 	dest->len = 0; // reset (maybe provide no reset opt?)
 	pfh_buff_push(dest, ((pfh_stroke_point){
 		.point = pts[0],
-		.vector = {1, 1},
 		.distance = 0,
+		.vector = {1, 1},
 		.running_length = 0,
 	}));
 
@@ -216,7 +214,7 @@ void pfh_get_stroke_points(pfh_stroke_point_buff *dest, const pfh_point pts[], s
 	for (int i = 1; i < pts_len; i++) {
 		pfh_stroke_point *prev = dest->elems + dest->len - 1;
 		pfh_point point = (opts->is_complete && i == max) ?
-			pts[pts_len-1] : // just add last point. otherwise, interpolate a new point with t
+			pts[pts_len-1] :
 			(pfh_point){ pfh_vec2_lrp(prev->point.coord, pts[i].coord, t), pts[i].pressure };
 
 		if (pfh_vec2_equal(prev->point.coord, point.coord)) 
@@ -319,7 +317,7 @@ static inline float pfh_simulate_pressure(float prev_pressure, float distance, f
  * Compute by averaging the first few points.
  * This prevents "fat starts" since drawn lines almost always start slow.
  */
-static inline float pfh_compute_initial_pressure(pfh_stroke_point pts[], size_t len, bool should_simulate_pressure, float size)
+static inline float pfh_compute_initial_pressure(const pfh_stroke_point pts[], size_t len, bool should_simulate_pressure, float size)
 {
 	float accumulator = pts[0].point.pressure;
 
@@ -363,9 +361,6 @@ static inline float pfh_get_stroke_radius(float size, float thinning, float pres
  */
 void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point stroke_pts[], size_t stroke_pts_len, const pfh_stroke_opts *opts)
 {
-
-	pfh_vec2_buff *pfh_buff_leftpt = dest;
-
 	if (stroke_pts_len == 0 || opts->size <= 0)
 		return;
 
@@ -406,6 +401,7 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 	// ... so that we don't detect the same corner twice
 	bool prev_pt_is_sharp_corner = false;
 
+	pfh_vec2_buff *pfh_buff_leftpt = dest; // alias for consistency
 	/*
 	Find the outline's left and right stroke_pts
 	skipping the first and last points, which will get caps later on.
@@ -413,17 +409,9 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 	for (int i = 0; i < stroke_pts_len; i++) {
 		bool is_last_pt = i == stroke_pts_len - 1;
 
-		// Removes noise from the end of the line
 		if (!is_last_pt && total_length - stroke_pts[i].running_length < PFH_END_NOISE_THRESHOLD)
 			continue;
 
-		/*
-		Calculate the radius
-
-		If not thinning, the current point's radius will be half the size; or
-		otherwise, the size will be based on the current (real or simulated)
-		pressure.
-		*/
 		if (opts->thinning) {
 			float pressure = stroke_pts[i].point.pressure;
 			if (opts->simulate_pressure)
@@ -437,13 +425,7 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 		if (first_radius == -1)
 			first_radius = radius;
 
-		/*
-		Apply tapering
-
-		If the current length is within the taper distance at either the
-		start or the end, calculate the taper strengths. Apply the smaller
-		of the two taper strengths to the radius.
-		*/
+		/* Apply tapering */
 		float taper_start_strength = 1;
 		if (stroke_pts[i].running_length < taper_start) {
 			float t = stroke_pts[i].running_length / taper_start;
@@ -467,23 +449,22 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 
 		/* Add stroke_pts to left and right */
 
-		/*
-		Handle sharp corners
+		pfh_buff_leftpt->len = 0;
+		pfh_buff_rightpt.len = 0;
+		pfh_buff_startcap.len = 0;
+		pfh_buff_endcap.len = 0;
 
-		Find the difference (dot product) between the current and next vector.
-		If the next vector is at more than a right angle to the current vector,
-		draw a cap at the current point.
-		*/
+
+		/* Handle sharp corners */
 
 		pfh_vec2 next_vec = (!is_last_pt ? stroke_pts[i + 1] : stroke_pts[i]).vector;
 		float next_dot = !is_last_pt ? pfh_vec2_dot(stroke_pts[i].vector, next_vec) : 1.0;
 		float prev_dot = pfh_vec2_dot(stroke_pts[i].vector, prev_vec);
 
 		bool pt_is_sharp_corner = prev_dot < 0 && !prev_pt_is_sharp_corner;
-		bool next_pt_is_sharp_corner = !isnan(next_dot) && next_dot < 0; // originally it was checking next_dot != null? what?
+		bool next_pt_is_sharp_corner = !isnan(next_dot) && next_dot < 0;
 
 		if (pt_is_sharp_corner || next_pt_is_sharp_corner) {
-			// It's a sharp corner. Draw a rounded cap and move on to the next point
 			pfh_vec2 offset = pfh_vec2_per(prev_vec);
 			offset = pfh_vec2_mul_s(offset, radius);
 
@@ -520,17 +501,8 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 			continue;
 		}
 
-		/*
-		Add regular stroke_pts
+		/* Add regular stroke_pts */
 
-		Project stroke_pts to either side of the current point, using the
-		calculated size as a distance. If a point's distance to the
-		previous point on that side greater than the minimum distance
-		(or if the corner is kinda sharp), add the stroke_pts to the side's
-		stroke_pts array.
-		*/
-
-		// Use mutable operations for offset calculation
 		pfh_vec2 offset = pfh_vec2_lrp(next_vec, stroke_pts[i].vector, next_dot);
 		offset = pfh_vec2_per(offset);
 		offset = pfh_vec2_mul_s(offset, radius);
@@ -553,13 +525,7 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 		prev_vec = stroke_pts[i].vector;
 	}
 
-	/*
-	Drawing caps
-
-	Now that we have our stroke_pts on either side of the line, we need to
-	draw caps at the start and end. Tapered lines don't have caps, but
-	may have dots for very short lines.
-	*/
+	/* Drawing caps */
 
 	pfh_vec2 first_point = stroke_pts[0].point.coord;
 
@@ -612,12 +578,7 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 		}
 	}
 
-	/*
-	Return the stroke_pts in the correct winding order: begin on the left side, then
-	continue around the end cap, then come back along the right side, and finally
-	complete the start cap.
-	*/
-	// dest === _pft_leftpt_buff
+	// remember dest === _pft_leftpt_buff
 	pfh_buff_left_concat(dest, &pfh_buff_endcap);
 	pfh_buff_left_concat_reverse(dest, &pfh_buff_rightpt);
 	pfh_buff_left_concat(dest, &pfh_buff_startcap);
@@ -628,4 +589,3 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 
 // TODO: 
 // DEFAULT_PRESSURE for the first point needs to be set. 
-// Make util function to modify pressures
