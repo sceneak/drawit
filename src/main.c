@@ -22,17 +22,17 @@ typedef struct { float r, g, b, a; } color;
 
 typedef struct { vec2 coord; float pressure; } point;
 
-DA_DEFINE(point, point_list)
-DA_DEFINE(int, int_list)
+DA_DEFINE(point, da_point)
+DA_DEFINE(int, da_int)
 
 struct object {
-	struct int_list   *input_starts;
-	struct point_list *input_points;
-	struct int_list   *stroke_starts;
+	struct da_int   *input_starts;
+	struct da_point *input_points;
+	struct da_int   *stroke_starts;
 	pfh_vec2_buff     stroke_buff;
 };
 
-DA_DEFINE(struct object, object_list)
+DA_DEFINE(struct object, da_object)
 
 static float zoomFrac = 0.1f;
 
@@ -52,7 +52,7 @@ static vec2 pan_pivot_camera;
 
 static bool is_drawing_obj = false;
 static bool is_drawing_stroke = false;
-static struct object_list *objects;
+static struct da_object *objects;
 
 static inline vec2 screen_to_world(vec2 screen)
 {
