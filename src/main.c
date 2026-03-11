@@ -115,7 +115,7 @@ void draw_stroke_continue(struct object *obj, vec2 input, float pressure)
 	size_t last_stroke_start_idx = obj->stroke_starts->elems[obj->stroke_starts->len-1];
 	size_t last_input_start_idx = obj->input_starts->elems[obj->input_starts->len-1];
 
-	obj->input_points = point_list_append(obj->input_points, (point){ input, pressure });
+	obj->input_points = da_point_append(obj->input_points, (point){ input, pressure });
 
 	// Regenerate the last stroke completely
 	obj->stroke_buf.len = last_stroke_start_idx;
@@ -128,15 +128,15 @@ void draw_stroke_continue(struct object *obj, vec2 input, float pressure)
 }
 void draw_stroke_start(struct object *obj, vec2 input, float pressure)
 {
-	obj->input_starts = int_list_append(obj->input_starts, obj->input_points->len);
-	obj->stroke_starts = int_list_append(obj->stroke_starts, obj->stroke_buf.len);
+	obj->input_starts = da_int_append(obj->input_starts, obj->input_points->len);
+	obj->stroke_starts = da_int_append(obj->stroke_starts, obj->stroke_buf.len);
 	draw_stroke_continue(obj, input, pressure);
 }
 
 
 void init(void) 
 {
-	objects = object_list_create(DA_INITIAL_CAPACITY);
+	objects = da_object_create(DA_INITIAL_CAPACITY);
 
 	screen_width = sapp_width();
 	screen_height = sapp_height();
@@ -194,12 +194,12 @@ void event(const sapp_event *e)
 				is_drawing_obj = true;
 				clear_color = (color) { .13, .2, .13, 1 };
 				struct object obj = {
-					.input_points  = point_list_create(DA_INITIAL_CAPACITY),
-					.input_starts  = int_list_create(DA_INITIAL_CAPACITY),
-					.stroke_starts      = int_list_create(DA_INITIAL_CAPACITY),
+					.input_points  = da_point_create(DA_INITIAL_CAPACITY),
+					.input_starts  = da_int_create(DA_INITIAL_CAPACITY),
+					.stroke_starts = da_int_create(DA_INITIAL_CAPACITY),
 				};
 				pfh_vec2_buf_init(&obj.stroke_buf, DA_INITIAL_CAPACITY);
-				objects = object_list_append(objects, obj);
+				objects = da_object_append(objects, obj);
 			}
 			is_drawing_stroke = true;
 			draw_stroke_start(
