@@ -29,7 +29,7 @@ struct object {
 	struct da_int   *input_starts;
 	struct da_point *input_points;
 	struct da_int   *stroke_starts;
-	pfh_vec2_buff     stroke_buff;
+	pfh_vec2_buf     stroke_buf;
 };
 
 DA_DEFINE(struct object, da_object)
@@ -76,9 +76,9 @@ void print_object(const struct object *obj)
 		printf("%d ", obj->stroke_starts->elems[i]);
 	puts("");
 
-	printf("	stroke_elems (%llu): ", obj->stroke_buff.len);
-	for (i = 0; i < obj->stroke_buff.len; i++)
-		printf("(%.1f %.1f) ", obj->stroke_buff.elems[i].x, obj->stroke_buff.elems[i].y);
+	printf("	stroke_elems (%llu): ", obj->stroke_buf.len);
+	for (i = 0; i < obj->stroke_buf.len; i++)
+		printf("(%.1f %.1f) ", obj->stroke_buf.elems[i].x, obj->stroke_buf.elems[i].y);
 	puts("");
 }
 void print_objects(void)
@@ -118,9 +118,9 @@ void draw_stroke_continue(struct object *obj, vec2 input, float pressure)
 	obj->input_points = point_list_append(obj->input_points, (point){ input, pressure });
 
 	// Regenerate the last stroke completely
-	obj->stroke_buff.len = last_stroke_start_idx;
+	obj->stroke_buf.len = last_stroke_start_idx;
 	pfh_get_stroke(
-		&obj->stroke_buff, 
+		&obj->stroke_buf, 
 		(pfh_point*)obj->input_points->elems + last_input_start_idx, 
 		obj->input_points->len - last_input_start_idx, 
 		&stroke_opts
@@ -129,7 +129,7 @@ void draw_stroke_continue(struct object *obj, vec2 input, float pressure)
 void draw_stroke_start(struct object *obj, vec2 input, float pressure)
 {
 	obj->input_starts = int_list_append(obj->input_starts, obj->input_points->len);
-	obj->stroke_starts = int_list_append(obj->stroke_starts, obj->stroke_buff.len);
+	obj->stroke_starts = int_list_append(obj->stroke_starts, obj->stroke_buf.len);
 	draw_stroke_continue(obj, input, pressure);
 }
 
@@ -198,7 +198,7 @@ void event(const sapp_event *e)
 					.input_starts  = int_list_create(DA_INITIAL_CAPACITY),
 					.stroke_starts      = int_list_create(DA_INITIAL_CAPACITY),
 				};
-				pfh_vec2_buff_init(&obj.stroke_buff, DA_INITIAL_CAPACITY);
+				pfh_vec2_buf_init(&obj.stroke_buf, DA_INITIAL_CAPACITY);
 				objects = object_list_append(objects, obj);
 			}
 			is_drawing_stroke = true;
@@ -240,9 +240,9 @@ void draw_objects(void)
 		nvgFillColor(vg, nvgRGBA(204, 255, 0, 255));
 
 		int curr_start = 0, next_start = 0;
-		for (j = k = 0; j < obj->stroke_buff.len; j++) {
+		for (j = k = 0; j < obj->stroke_buf.len; j++) {
 			const bool is_start = k < obj->stroke_starts->len && j == next_start;
-			const pfh_vec2 p0 = obj->stroke_buff.elems[j];
+			const pfh_vec2 p0 = obj->stroke_buf.elems[j];
 
 			if (is_start) {
 				nvgMoveTo(vg, p0.x, -p0.y);
@@ -250,12 +250,12 @@ void draw_objects(void)
 				curr_start = next_start;
 				next_start = k < obj->stroke_starts->len 
 					? obj->stroke_starts->elems[k] 
-					: obj->stroke_buff.len;
+					: obj->stroke_buf.len;
 			}
 
 			const pfh_vec2 p1 = (j+1) == next_start
-				? obj->stroke_buff.elems[curr_start] // apparently the last one needs to wrap back to start.
-				: obj->stroke_buff.elems[j + 1];
+				? obj->stroke_buf.elems[curr_start] // apparently the last one needs to wrap back to start.
+				: obj->stroke_buf.elems[j + 1];
 
 			nvgQuadTo(vg, p0.x, -p0.y, (p0.x + p1.x) / 2, -(p0.y + p1.y) / 2);
 		}

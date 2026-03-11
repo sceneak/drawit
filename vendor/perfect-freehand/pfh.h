@@ -35,23 +35,23 @@ typedef struct {
 	size_t capacity;
 	size_t len;
 	pfh_vec2 *elems;
-} pfh_vec2_buff;
+} pfh_vec2_buf;
 
 typedef struct {
 	size_t capacity;
 	size_t len;
 	pfh_stroke_point *elems;
-} pfh_stroke_point_buff;
+} pfh_stroke_point_buf;
 
-void pfh_vec2_buff_init(pfh_vec2_buff *buff, size_t capacity);
-void pfh_vec2_buff_deinit(pfh_vec2_buff *buff);
+void pfh_vec2_buf_init(pfh_vec2_buf *buf, size_t capacity);
+void pfh_vec2_buf_deinit(pfh_vec2_buf *buf);
 
-void pfh_stroke_point_buff_init(pfh_stroke_point_buff *buff, size_t capacity);
-void pfh_stroke_point_buff_deinit(pfh_stroke_point_buff *buff);
+void pfh_stroke_point_buf_init(pfh_stroke_point_buf *buf, size_t capacity);
+void pfh_stroke_point_buf_deinit(pfh_stroke_point_buf *buf);
 
-void pfh_get_stroke(pfh_vec2_buff *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts);
-void pfh_get_stroke_points(pfh_stroke_point_buff *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts);
-void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point stroke_pts[], size_t stroke_pts_len, const pfh_stroke_opts *opts);
+void pfh_get_stroke(pfh_vec2_buf *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts);
+void pfh_get_stroke_points(pfh_stroke_point_buf *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts);
+void pfh_get_stroke_outline_points(pfh_vec2_buf *dest, const pfh_stroke_point stroke_pts[], size_t stroke_pts_len, const pfh_stroke_opts *opts);
 
 #ifdef PFH_IMPLEMENTATION
 #include <math.h>
@@ -83,73 +83,73 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 	#define pfh_free(ptr) free(ptr)
 #endif
 
-#define PFH_BUFF_GROW_FACTOR 2
-#define PFH_BUFF_INIT_CAPACITY 64
+#define PFH_buf_GROW_FACTOR 2
+#define PFH_buf_INIT_CAPACITY 64
 #define pfh_max(a, b) ( (a) > (b) ? (a) : (b) )
 #define pfh_valid_pressure(p) (p >= 0)
-#define pfh_buff_init(buff, capacity)             \
+#define pfh_buf_init(buf, capacity)             \
 	do                                        \
 	{                                         \
-		memset(buff, 0, sizeof(*(buff))); \
-		pfh_buff_reserve(buff, capacity); \
+		memset(buf, 0, sizeof(*(buf))); \
+		pfh_buf_reserve(buf, capacity); \
 	} while (0)
-#define pfh_buff_deinit(buff)                     \
+#define pfh_buf_deinit(buf)                     \
 	do                                        \
 	{                                         \
-		pfh_free((buff)->elems);          \
-		memset(buff, 0, sizeof(*(buff))); \
+		pfh_free((buf)->elems);          \
+		memset(buf, 0, sizeof(*(buf))); \
 	} while (0)
-#define pfh_buff_reserve(buff, total)                                      \
+#define pfh_buf_reserve(buf, total)                                      \
         do                                                                 \
         {                                                                  \
-                if (total >= (buff)->capacity)                             \
+                if (total >= (buf)->capacity)                             \
                 {                                                          \
-                        if ((buff)->capacity == 0)                         \
-                                (buff)->capacity = PFH_BUFF_INIT_CAPACITY; \
+                        if ((buf)->capacity == 0)                         \
+                                (buf)->capacity = PFH_buf_INIT_CAPACITY; \
                                                                            \
-                        while (total >= (buff)->capacity)                  \
-                                (buff)->capacity *= PFH_BUFF_GROW_FACTOR;  \
-                        (buff)->elems = pfh_realloc(                       \
-                            (buff)->elems,                                 \
-                            (buff)->capacity * sizeof(*(buff)->elems));    \
-                        assert((buff)->elems && "OOM. buy more ram lol");  \
+                        while (total >= (buf)->capacity)                  \
+                                (buf)->capacity *= PFH_buf_GROW_FACTOR;  \
+                        (buf)->elems = pfh_realloc(                       \
+                            (buf)->elems,                                 \
+                            (buf)->capacity * sizeof(*(buf)->elems));    \
+                        assert((buf)->elems && "OOM. buy more ram lol");  \
                 }                                                          \
         } while (0)
-#define pfh_buff_push_raw(buff, elem) (buff)->elems[(buff)->len++] = (elem);
-#define pfh_buff_push(buff, elem)                        \
+#define pfh_buf_push_raw(buf, elem) (buf)->elems[(buf)->len++] = (elem);
+#define pfh_buf_push(buf, elem)                        \
         do                                               \
         {                                                \
-                pfh_buff_reserve(buff, (buff)->len + 1); \
-                pfh_buff_push_raw(buff, elem);           \
+                pfh_buf_reserve(buf, (buf)->len + 1); \
+                pfh_buf_push_raw(buf, elem);           \
         } while (0)
-#define pfh_buff_left_concat(left, right)                                                                    \
+#define pfh_buf_left_concat(left, right)                                                                    \
         do                                                                                                   \
         {                                                                                                    \
-                pfh_buff_reserve(left, (left)->len + (right)->len);                                          \
+                pfh_buf_reserve(left, (left)->len + (right)->len);                                          \
                 memcpy((left)->elems + (left)->len, (right)->elems, (right)->len * sizeof(*(right)->elems)); \
                 (left)->len += (right)->len;                                                                 \
         } while (0)
-#define pfh_buff_left_concat_reverse(left, right)                   \
+#define pfh_buf_left_concat_reverse(left, right)                   \
         do                                                          \
         {                                                           \
-                pfh_buff_reserve(left, (left)->len + (right)->len); \
+                pfh_buf_reserve(left, (left)->len + (right)->len); \
                 for (size_t i = (right)->len; i-- > 0;)             \
                 {                                                   \
-                        pfh_buff_push_raw(left, (right)->elems[i]); \
+                        pfh_buf_push_raw(left, (right)->elems[i]); \
                 }                                                   \
         } while (0)
 
 // Placeholder for initial vector & creating 2nd point when only one is provided.
 static const pfh_vec2 UNIT_OFFSET = {1, 1};
-static pfh_vec2_buff pfh_buff_rightpt = {0};
-static pfh_vec2_buff pfh_buff_startcap = {0};
-static pfh_vec2_buff pfh_buff_endcap = {0};
-static pfh_stroke_point_buff pfh_buff_stroke_pts = {0};
+static pfh_vec2_buf pfh_buf_rightpt = {0};
+static pfh_vec2_buf pfh_buf_startcap = {0};
+static pfh_vec2_buf pfh_buf_endcap = {0};
+static pfh_stroke_point_buf pfh_buf_stroke_pts = {0};
 
-void pfh_vec2_buff_init(pfh_vec2_buff *buff, size_t capacity) { pfh_buff_init(buff, capacity); }
-void pfh_vec2_buff_deinit(pfh_vec2_buff *buff) { pfh_buff_deinit(buff); }
-void pfh_stroke_point_buff_init(pfh_stroke_point_buff *buff, size_t capacity) { pfh_buff_init(buff, capacity); }
-void pfh_stroke_point_buff_deinit(pfh_stroke_point_buff *buff) { pfh_buff_deinit(buff); }
+void pfh_vec2_buf_init(pfh_vec2_buf *buf, size_t capacity) { pfh_buf_init(buf, capacity); }
+void pfh_vec2_buf_deinit(pfh_vec2_buf *buf) { pfh_buf_deinit(buf); }
+void pfh_stroke_point_buf_init(pfh_stroke_point_buf *buf, size_t capacity) { pfh_buf_init(buf, capacity); }
+void pfh_stroke_point_buf_deinit(pfh_stroke_point_buf *buf) { pfh_buf_deinit(buf); }
 
 static inline bool pfh_flt_equal(float a, float b)
 {
@@ -203,17 +203,17 @@ static inline pfh_vec2 pfh_vec2_rot_around(pfh_vec2 A, pfh_vec2 C, float r)
 	return pfh_vec2_add(n, C);
 }
 
-void pfh_get_stroke(pfh_vec2_buff *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts)
+void pfh_get_stroke(pfh_vec2_buf *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts)
 {
-	pfh_buff_stroke_pts.len = 0;
-	pfh_get_stroke_points(&pfh_buff_stroke_pts, pts, pts_len, opts);
-	pfh_get_stroke_outline_points(dest, pfh_buff_stroke_pts.elems, pfh_buff_stroke_pts.len, opts);
+	pfh_buf_stroke_pts.len = 0;
+	pfh_get_stroke_points(&pfh_buf_stroke_pts, pts, pts_len, opts);
+	pfh_get_stroke_outline_points(dest, pfh_buf_stroke_pts.elems, pfh_buf_stroke_pts.len, opts);
 }
 
 /**
  * @brief Get an array of points as objects with an adjusted point, pressure, vector, distance, and running_length.
  */
-void pfh_get_stroke_points(pfh_stroke_point_buff *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts)
+void pfh_get_stroke_points(pfh_stroke_point_buf *dest, const pfh_point pts[], size_t pts_len, const pfh_stroke_opts *opts)
 {
 	if (pts_len == 0)
 		return;
@@ -226,7 +226,7 @@ void pfh_get_stroke_points(pfh_stroke_point_buff *dest, const pfh_point pts[], s
 	 * I'm not adding it since it requires duplicating pts
 	 */
 
-	pfh_buff_push(dest, ((pfh_stroke_point){
+	pfh_buf_push(dest, ((pfh_stroke_point){
 		.point = { 
 			pts[0].coord, 
 			pts[0].pressure >= 0 ? pts[0].pressure : PFH_DEFAULT_FIRST_PRESSURE,
@@ -262,7 +262,7 @@ void pfh_get_stroke_points(pfh_stroke_point_buff *dest, const pfh_point pts[], s
 		// Create a new pfh_stroke_point (it will be the new "previous" one).
 		pfh_vec2 vec_diff = pfh_vec2_sub(prev->point.coord, point.coord);
 
-		pfh_buff_push(dest, ((pfh_stroke_point){
+		pfh_buf_push(dest, ((pfh_stroke_point){
 			.point = { 
 				point.coord, 
 				point.pressure >= 0 ? point.pressure : PFH_DEFAULT_PRESSURE,
@@ -276,56 +276,56 @@ void pfh_get_stroke_points(pfh_stroke_point_buff *dest, const pfh_point pts[], s
 	dest->elems[0].vector = dest->len > 1 ? dest->elems[1].vector : (pfh_vec2){0, 0};
 }
 
-static inline void pfh_draw_dot(pfh_vec2_buff *dest, pfh_vec2 center, float radius)
+static inline void pfh_draw_dot(pfh_vec2_buf *dest, pfh_vec2 center, float radius)
 {
 	const pfh_vec2 offsetPoint = pfh_vec2_add(center, UNIT_OFFSET);
 	const pfh_vec2 start = pfh_vec2_prj(center, pfh_vec2_uni(pfh_vec2_per(pfh_vec2_sub(center, offsetPoint))), -radius);
 
 	float step = 1.0f / PFH_START_CAP_SEGMENTS;
-	pfh_buff_reserve(dest, dest->len + PFH_START_CAP_SEGMENTS);
+	pfh_buf_reserve(dest, dest->len + PFH_START_CAP_SEGMENTS);
 	for (float t = step; t <= 1; t += step)
-		pfh_buff_push_raw(dest, pfh_vec2_rot_around(start, center, PFH_FIXED_PI * 2 * t));
+		pfh_buf_push_raw(dest, pfh_vec2_rot_around(start, center, PFH_FIXED_PI * 2 * t));
 }
-static inline void pfh_draw_round_start_cap(pfh_vec2_buff *dest, pfh_vec2 center, pfh_vec2 right_point, float segments)
+static inline void pfh_draw_round_start_cap(pfh_vec2_buf *dest, pfh_vec2 center, pfh_vec2 right_point, float segments)
 {
 	float step = 1.0f / segments;
 
-	pfh_buff_reserve(dest, dest->len + segments);
+	pfh_buf_reserve(dest, dest->len + segments);
 	for (float t = step; t <= 1; t += step)
-		pfh_buff_push_raw(dest, pfh_vec2_rot_around(right_point, center, PFH_FIXED_PI * t));
+		pfh_buf_push_raw(dest, pfh_vec2_rot_around(right_point, center, PFH_FIXED_PI * t));
 }
 
-static inline void pfh_draw_flat_start_cap(pfh_vec2_buff *dest, pfh_vec2 center, pfh_vec2 left_point, pfh_vec2 right_point)
+static inline void pfh_draw_flat_start_cap(pfh_vec2_buf *dest, pfh_vec2 center, pfh_vec2 left_point, pfh_vec2 right_point)
 {
 	pfh_vec2 cornersVector = pfh_vec2_sub(left_point, right_point);
 	pfh_vec2 offsetA = pfh_vec2_mul_s(cornersVector, 0.5f);
 	pfh_vec2 offsetB = pfh_vec2_mul_s(cornersVector, 0.51f);
 
-	pfh_buff_reserve(dest, dest->len + 4);
-	pfh_buff_push_raw(dest, pfh_vec2_sub(center, offsetA));
-	pfh_buff_push_raw(dest, pfh_vec2_sub(center, offsetB));
-	pfh_buff_push_raw(dest, pfh_vec2_add(center, offsetB));
-	pfh_buff_push_raw(dest, pfh_vec2_add(center, offsetA));
+	pfh_buf_reserve(dest, dest->len + 4);
+	pfh_buf_push_raw(dest, pfh_vec2_sub(center, offsetA));
+	pfh_buf_push_raw(dest, pfh_vec2_sub(center, offsetB));
+	pfh_buf_push_raw(dest, pfh_vec2_add(center, offsetB));
+	pfh_buf_push_raw(dest, pfh_vec2_add(center, offsetA));
 }
 
 // 1.5 turns to handle sharp end turns correctly
-static inline void pfh_draw_round_end_cap(pfh_vec2_buff *dest, pfh_vec2 center, pfh_vec2 direction, float radius, float segments)
+static inline void pfh_draw_round_end_cap(pfh_vec2_buf *dest, pfh_vec2 center, pfh_vec2 direction, float radius, float segments)
 {
 	pfh_vec2 start = pfh_vec2_prj(center, direction, radius);
 	float step = 1.0f / segments;
 
-	pfh_buff_reserve(dest, dest->len + segments);
+	pfh_buf_reserve(dest, dest->len + segments);
 	for (float t = step; t <= 1; t += step)
-		pfh_buff_push(dest, pfh_vec2_rot_around(start, center, PFH_FIXED_PI * 3 * t));
+		pfh_buf_push(dest, pfh_vec2_rot_around(start, center, PFH_FIXED_PI * 3 * t));
 }
 
-static inline void pfh_draw_flat_end_cap(pfh_vec2_buff *dest, pfh_vec2 center, pfh_vec2 direction, float radius)
+static inline void pfh_draw_flat_end_cap(pfh_vec2_buf *dest, pfh_vec2 center, pfh_vec2 direction, float radius)
 {
-	pfh_buff_reserve(dest, dest->len + 4);
-	pfh_buff_push_raw(dest, pfh_vec2_add(center, pfh_vec2_mul_s(direction, radius)));
-	pfh_buff_push_raw(dest, pfh_vec2_add(center, pfh_vec2_mul_s(direction, radius * 0.99)));
-	pfh_buff_push_raw(dest, pfh_vec2_sub(center, pfh_vec2_mul_s(direction, radius * 0.99)));
-	pfh_buff_push_raw(dest, pfh_vec2_sub(center, pfh_vec2_mul_s(direction, radius)));
+	pfh_buf_reserve(dest, dest->len + 4);
+	pfh_buf_push_raw(dest, pfh_vec2_add(center, pfh_vec2_mul_s(direction, radius)));
+	pfh_buf_push_raw(dest, pfh_vec2_add(center, pfh_vec2_mul_s(direction, radius * 0.99)));
+	pfh_buf_push_raw(dest, pfh_vec2_sub(center, pfh_vec2_mul_s(direction, radius * 0.99)));
+	pfh_buf_push_raw(dest, pfh_vec2_sub(center, pfh_vec2_mul_s(direction, radius)));
 }
 
 static inline float pfh_compute_taper_distance(float taper, float size, float total_length)
@@ -392,7 +392,7 @@ static inline float pfh_get_stroke_radius(float size, float thinning, float pres
 /**
  * @brief Get an array of points representing the outline of a stroke.
  */
-void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point stroke_pts[], size_t stroke_pts_len, const pfh_stroke_opts *opts)
+void pfh_get_stroke_outline_points(pfh_vec2_buf *dest, const pfh_stroke_point stroke_pts[], size_t stroke_pts_len, const pfh_stroke_opts *opts)
 {
 	if (stroke_pts_len == 0 || opts->size <= 0)
 		return;
@@ -433,9 +433,9 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 
 	size_t dest_start_len = dest->len;
 
-	pfh_buff_rightpt.len = 0;
-	pfh_buff_startcap.len = 0;
-	pfh_buff_endcap.len = 0;
+	pfh_buf_rightpt.len = 0;
+	pfh_buf_startcap.len = 0;
+	pfh_buf_endcap.len = 0;
 
 	/*
 	Find the outline's left and right stroke_pts
@@ -502,11 +502,11 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 			for (float t = 0; t <= 1; t += step) {
 				tmp_left_pt = pfh_vec2_sub(stroke_pts[i].point.coord, offset);
 				tmp_left_pt = pfh_vec2_rot_around(tmp_left_pt, stroke_pts[i].point.coord, PFH_FIXED_PI * t);
-				pfh_buff_push(dest, tmp_left_pt);
+				pfh_buf_push(dest, tmp_left_pt);
 
 				tmp_right_pt = pfh_vec2_add(stroke_pts[i].point.coord, offset);
 				tmp_right_pt = pfh_vec2_rot_around(tmp_right_pt, stroke_pts[i].point.coord, PFH_FIXED_PI * -t);
-				pfh_buff_push(&pfh_buff_rightpt, tmp_right_pt);
+				pfh_buf_push(&pfh_buf_rightpt, tmp_right_pt);
 			}
 
 			prev_left_pt = tmp_left_pt;
@@ -527,8 +527,8 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 
 			pfh_vec2 left_pt = pfh_vec2_sub(stroke_pts[i].point.coord, offset);
 			pfh_vec2 right_pt = pfh_vec2_add(stroke_pts[i].point.coord, offset);
-			pfh_buff_push(dest, left_pt);
-			pfh_buff_push(&pfh_buff_rightpt, right_pt);
+			pfh_buf_push(dest, left_pt);
+			pfh_buf_push(&pfh_buf_rightpt, right_pt);
 			continue;
 		}
 
@@ -541,14 +541,14 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 		tmp_left_pt = pfh_vec2_sub(stroke_pts[i].point.coord, offset);
 
 		if (i <= 1 || pfh_vec2_dist2(prev_left_pt, tmp_left_pt) > min_dist) {
-			pfh_buff_push(dest, tmp_left_pt);
+			pfh_buf_push(dest, tmp_left_pt);
 			prev_left_pt = tmp_left_pt;
 		}
 
 		tmp_right_pt = pfh_vec2_add(stroke_pts[i].point.coord, offset);
 
 		if (i <= 1 || pfh_vec2_dist2(prev_right_pt, tmp_right_pt) > min_dist) {
-			pfh_buff_push(&pfh_buff_rightpt, tmp_right_pt);
+			pfh_buf_push(&pfh_buf_rightpt, tmp_right_pt);
 			prev_right_pt = tmp_right_pt;
 		}
 
@@ -576,17 +576,17 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 			// The start point is tapered, noop
 		} else if (opts->start.cap) {
 			pfh_draw_round_start_cap(
-				&pfh_buff_startcap,
+				&pfh_buf_startcap,
 				first_point, 
-				pfh_buff_rightpt.elems[0], 
+				pfh_buf_rightpt.elems[0], 
 				PFH_START_CAP_SEGMENTS
 			);
 		} else {
 			pfh_draw_flat_start_cap(
-				&pfh_buff_startcap,
+				&pfh_buf_startcap,
 				first_point,
 				dest->elems[dest_start_len],
-				pfh_buff_rightpt.elems[0]
+				pfh_buf_rightpt.elems[0]
 			);
 		}
 
@@ -595,24 +595,24 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 
 		if (taper_end || (taper_start && stroke_pts_len == 1)) {
 			// Tapered end - push the last point to the line
-			pfh_buff_push(&pfh_buff_endcap, last_point);
+			pfh_buf_push(&pfh_buf_endcap, last_point);
 		} else if (opts->end.cap) {
 			pfh_draw_round_end_cap(
-				&pfh_buff_endcap,
+				&pfh_buf_endcap,
 				last_point,
 				direction,
 				radius,
 				PFH_END_CAP_SEGMENTS
 			);
 		} else {
-			pfh_draw_flat_end_cap(&pfh_buff_endcap, last_point, direction, radius);
+			pfh_draw_flat_end_cap(&pfh_buf_endcap, last_point, direction, radius);
 		}
 	}
 
-	// remember dest === _pft_leftpt_buff
-	pfh_buff_left_concat(dest, &pfh_buff_endcap);
-	pfh_buff_left_concat_reverse(dest, &pfh_buff_rightpt);
-	pfh_buff_left_concat(dest, &pfh_buff_startcap);
+	// remember dest === _pft_leftpt_buf
+	pfh_buf_left_concat(dest, &pfh_buf_endcap);
+	pfh_buf_left_concat_reverse(dest, &pfh_buf_rightpt);
+	pfh_buf_left_concat(dest, &pfh_buf_startcap);
 }
 
 #endif
