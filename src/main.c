@@ -62,36 +62,36 @@ static inline vec2 screen_to_world(vec2 screen)
 	};
 }
 
+void print_object(const struct object *obj) 
+{
+	int i;
+	printf("	input_starts (%llu): ", obj->input_starts->len);
+	for (i = 0; i < obj->input_starts->len; i++)
+		printf("%d ", obj->input_starts->elems[i]);
+	puts("");
+	printf("	input_points (%llu)\n", obj->input_points->len);
+
+	printf("	stroke_starts (%llu): ", obj->stroke_starts->len);
+	for (i = 0; i < obj->stroke_starts->len; i++)
+		printf("%d ", obj->stroke_starts->elems[i]);
+	puts("");
+
+	printf("	stroke_elems (%llu): ", obj->stroke_buff.len);
+	for (i = 0; i < obj->stroke_buff.len; i++)
+		printf("(%.1f %.1f) ", obj->stroke_buff.elems[i].x, obj->stroke_buff.elems[i].y);
+	puts("");
+}
 void print_objects(void)
 {
-	struct object *obj;
-	int i, j;
-
-	puts("Objects:");
+	int i;
 	for (i = 0; i < objects->len; i++) {
 		printf("[%d] Object\n", i);
-
-		obj = objects->elems + i;
-		printf("	input_starts (%llu): ", obj->input_starts->len);
-		for (j = 0; j < obj->input_starts->len; j++)
- 			printf("%d ", obj->input_starts->elems[j]);
-		puts("");
-		printf("	input_points (%llu)\n", obj->input_points->len);
-
-		printf("	stroke_starts (%llu): ", obj->stroke_starts->len);
-		for (j = 0; j < obj->stroke_starts->len; j++)
- 			printf("%d ", obj->stroke_starts->elems[j]);
-		puts("");
-
-		printf("	stroke_elems (%llu): ", obj->stroke_buff.len);
-		for (j = 0; j < obj->stroke_buff.len; j++)
- 			printf("(%.1f %.1f) ", obj->stroke_buff.elems[j].x, obj->stroke_buff.elems[j].y);
-		puts("");
+		print_object(objects->elems + i);
 	}
 }
 
 static const pfh_stroke_opts stroke_opts = {
-	.size = 8,
+	.size = 14,
 	.thinning = .5,
 	.streamline = .5,
 	.smoothing = .5,
@@ -161,7 +161,7 @@ void event(const sapp_event *e)
 		if (e->key_code == SAPP_KEYCODE_LEFT_CONTROL && is_drawing_obj) {
 			is_drawing_obj = false;
 			clear_color = CLEAR_COLOR_DEFAULT;
-			print_objects();
+			// print_object(objects->elems + objects->len - 1);
 		}
 		break;
 	case SAPP_EVENTTYPE_KEY_UP:
@@ -238,17 +238,29 @@ void draw_objects(void)
 
 		nvgBeginPath(vg);
 		nvgFillColor(vg, nvgRGBA(204, 255, 0, 255));
+
+		int curr_start = 0, next_start = 0;
 		for (j = k = 0; j < obj->stroke_buff.len; j++) {
-			if (k >= obj->stroke_starts->len || j != obj->stroke_starts->elems[k]) {
-				nvgLineTo(vg, obj->stroke_buff.elems[j].x, -obj->stroke_buff.elems[j].y);
-				continue;
+			const bool is_start = k < obj->stroke_starts->len && j == next_start;
+			const pfh_vec2 p0 = obj->stroke_buff.elems[j];
+
+			if (is_start) {
+				nvgMoveTo(vg, p0.x, -p0.y);
+				k++;
+				curr_start = next_start;
+				next_start = k < obj->stroke_starts->len 
+					? obj->stroke_starts->elems[k] 
+					: obj->stroke_buff.len;
 			}
-			nvgMoveTo(vg, obj->stroke_buff.elems[j].x, -obj->stroke_buff.elems[j].y);
-			k++;
+
+			const pfh_vec2 p1 = (j+1) == next_start
+				? obj->stroke_buff.elems[curr_start] // apparently the last one needs to wrap back to start.
+				: obj->stroke_buff.elems[j + 1];
+
+			nvgQuadTo(vg, p0.x, -p0.y, (p0.x + p1.x) / 2, -(p0.y + p1.y) / 2);
 		}
 		nvgFill(vg);
 	}
-
 }
 
 void frame(void) 
