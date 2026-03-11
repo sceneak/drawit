@@ -93,7 +93,7 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 		memset(buff, 0, sizeof(*(buff))); \
 		pfh_buff_reserve(buff, capacity); \
 	} while (0)
-#define pfh_buff_deinit(buff)              \
+#define pfh_buff_deinit(buff)                     \
 	do                                        \
 	{                                         \
 		pfh_free((buff)->elems);          \

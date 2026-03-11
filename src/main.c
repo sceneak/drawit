@@ -91,7 +91,7 @@ void print_objects(void)
 }
 
 static const pfh_stroke_opts stroke_opts = {
-	.size = 14,
+	.size = 12,
 	.thinning = .5,
 	.streamline = .5,
 	.smoothing = .5,
