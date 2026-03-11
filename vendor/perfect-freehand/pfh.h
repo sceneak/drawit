@@ -402,7 +402,7 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 	const float taper_start = pfh_compute_taper_distance(opts->start.taper, opts->size, total_length);
 	const float taper_end = pfh_compute_taper_distance(opts->end.taper, opts->size, total_length);
 
-	const double min_dist = pow(opts->size * opts->smoothing, 2); // The minimum allowed distance between stroke_pts (squared)
+	const double min_dist = pow(opts->size * opts->smoothing, 2);
 
 	float prev_pressure = pfh_compute_initial_pressure(
 		stroke_pts,
@@ -432,6 +432,10 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 	bool prev_pt_is_sharp_corner = false;
 
 	size_t dest_start_len = dest->len;
+
+	pfh_buff_rightpt.len = 0;
+	pfh_buff_startcap.len = 0;
+	pfh_buff_endcap.len = 0;
 
 	/*
 	Find the outline's left and right stroke_pts
@@ -479,10 +483,6 @@ void pfh_get_stroke_outline_points(pfh_vec2_buff *dest, const pfh_stroke_point s
 		);
 
 		/* Add stroke_pts to left and right */
-
-		pfh_buff_rightpt.len = 0;
-		pfh_buff_startcap.len = 0;
-		pfh_buff_endcap.len = 0;
 
 
 		/* Handle sharp corners */
