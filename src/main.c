@@ -14,6 +14,8 @@
 
 #include "ds.h"
 
+
+#define CMD_HIST_MAX 128
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
 typedef struct { float x, y; } vec2;
@@ -31,6 +33,27 @@ struct object {
 	struct da_int   *stroke_starts;
 	pfh_vec2_buf     stroke_buf;
 };
+
+enum cmd_type {
+	CMD_OBJECT_BEGIN,
+	CMD_OBJECT_END,
+	CMD_STROKE_START,
+};
+
+struct cmd {
+	enum cmd_type type;
+	union {
+		vec2 input;
+	} v;
+};
+
+struct cmd_hist {
+	size_t tail;
+	size_t cursor;
+	struct cmd cmds[CMD_HIST_MAX];
+};
+
+DA_DEFINE(struct cmd, da_cmd)
 
 DA_DEFINE(struct object, da_object)
 
@@ -53,6 +76,96 @@ static vec2 pan_pivot_camera;
 static bool is_drawing_obj = false;
 static bool is_drawing_stroke = false;
 static struct da_object *objects;
+
+static struct cmd_hist cmd_hist;
+
+static const pfh_stroke_opts stroke_opts = {
+	.size = 12,
+	.thinning = .5,
+	.streamline = .5,
+	.smoothing = .5,
+	.easing = NULL,
+	.simulate_pressure = true,
+	.is_complete = false,
+	.start = {
+		.cap = true,
+		.taper = PFH_TAPER_NONE,
+		.easing = NULL,
+	},
+	.end = {
+		.cap = true,
+		.taper = PFH_TAPER_NONE,
+		.easing = NULL,
+	},
+	.last = false,
+};
+
+static inline void cmd_record(struct cmd cmd)
+{
+	if (cmd_hist.cursor != cmd_hist.tail-1) {
+		/* Cleanup */
+		cmd_hist.tail = cmd_hist.cursor+1;
+	}
+	printf("recorded %d\n", cmd.type);
+
+	cmd_hist.cmds[cmd_hist.tail++] = cmd;
+	cmd_hist.tail %= ARRAY_SIZE(cmd_hist.cmds);
+	cmd_hist.cursor = cmd_hist.tail-1;
+}
+
+static inline void cmd_undo()
+{
+	struct cmd cmd;
+
+	if (cmd_hist.cursor-1 == cmd_hist.tail-1)
+		return;
+
+	cmd = cmd_hist.cmds[cmd_hist.cursor];
+	cmd_hist.cursor--;
+	if (cmd_hist.cursor < 0)
+		cmd_hist.cursor = ARRAY_SIZE(cmd_hist.cmds)-1;
+
+	switch(cmd.type) {
+	case CMD_OBJECT_BEGIN:
+		break;
+	case CMD_OBJECT_END: 
+		break;
+	case CMD_STROKE_START:
+		struct object *obj = objects->elems + objects->len-1;
+		obj->input_starts->len--;
+		obj->input_points->len = obj->input_starts->elems[obj->input_starts->len];
+
+		obj->stroke_starts->len--;
+		obj->stroke_buf.len = obj->stroke_starts->elems[obj->stroke_starts->len];
+		pfh_get_stroke(
+			&obj->stroke_buf,
+			(pfh_point*)obj->input_points->elems + obj->input_starts->elems[obj->input_starts->len-1],
+			obj->input_points->len - obj->input_starts->elems[obj->input_starts->len-1],
+			&stroke_opts
+		);
+		break;
+	default: 
+		break;
+	}
+}
+
+static inline void cmd_redo()
+{
+	if (cmd_hist.cursor != cmd_hist.tail)
+		cmd_hist.cursor++;
+	struct cmd cmd = cmd_hist.cmds[cmd_hist.cursor];
+
+	switch(cmd.type) {
+	case CMD_OBJECT_BEGIN:
+		break;
+	case CMD_OBJECT_END: 
+		break;
+	case CMD_STROKE_START: 
+		break;
+	default: 
+		break;
+	}
+}
 
 static inline vec2 screen_to_world(vec2 screen)
 {
@@ -81,6 +194,7 @@ void print_object(const struct object *obj)
 		printf("(%.1f %.1f) ", obj->stroke_buf.elems[i].x, obj->stroke_buf.elems[i].y);
 	puts("");
 }
+
 void print_objects(void)
 {
 	int i;
@@ -90,26 +204,25 @@ void print_objects(void)
 	}
 }
 
-static const pfh_stroke_opts stroke_opts = {
-	.size = 12,
-	.thinning = .5,
-	.streamline = .5,
-	.smoothing = .5,
-	.easing = NULL,
-	.simulate_pressure = true,
-	.is_complete = false,
-	.start = {
-		.cap = true,
-		.taper = PFH_TAPER_NONE,
-		.easing = NULL,
-	},
-	.end = {
-		.cap = true,
-		.taper = PFH_TAPER_NONE,
-		.easing = NULL,
-	},
-	.last = false,
-};
+void object_begin()
+{
+	is_drawing_obj = true;
+	clear_color = (color) { .11, .17, .11, 1 };
+	struct object obj = {
+		.input_points  = da_point_create(DA_INITIAL_CAPACITY),
+		.input_starts  = da_int_create(DA_INITIAL_CAPACITY),
+		.stroke_starts = da_int_create(DA_INITIAL_CAPACITY),
+	};
+	pfh_vec2_buf_init(&obj.stroke_buf, DA_INITIAL_CAPACITY);
+	objects = da_object_append(objects, obj);
+}
+
+void object_end()
+{
+	is_drawing_obj = false;
+	clear_color = CLEAR_COLOR_DEFAULT;
+}
+
 void draw_stroke_continue(struct object *obj, vec2 input, float pressure)
 {
 	size_t last_stroke_start_idx = obj->stroke_starts->elems[obj->stroke_starts->len-1];
@@ -120,17 +233,24 @@ void draw_stroke_continue(struct object *obj, vec2 input, float pressure)
 	// Regenerate the last stroke completely
 	obj->stroke_buf.len = last_stroke_start_idx;
 	pfh_get_stroke(
-		&obj->stroke_buf, 
-		(pfh_point*)obj->input_points->elems + last_input_start_idx, 
-		obj->input_points->len - last_input_start_idx, 
+		&obj->stroke_buf,
+		(pfh_point*)obj->input_points->elems + last_input_start_idx,
+		obj->input_points->len - last_input_start_idx,
 		&stroke_opts
 	);
 }
+
 void draw_stroke_start(struct object *obj, vec2 input, float pressure)
 {
+	is_drawing_stroke = true;
 	obj->input_starts = da_int_append(obj->input_starts, obj->input_points->len);
 	obj->stroke_starts = da_int_append(obj->stroke_starts, obj->stroke_buf.len);
 	draw_stroke_continue(obj, input, pressure);
+}
+
+void draw_stroke_stop()
+{
+	is_drawing_stroke = false;
 }
 
 
@@ -152,19 +272,27 @@ void cleanup(void)
 
 void event(const sapp_event *e)
 {
+	static bool ctrl_active = false;
+
 	switch(e->type) {
 	case SAPP_EVENTTYPE_RESIZED:
 		screen_width = sapp_width();
 		screen_height = sapp_height();
 		break;
 	case SAPP_EVENTTYPE_KEY_DOWN:
-		if (e->key_code == SAPP_KEYCODE_LEFT_CONTROL && is_drawing_obj) {
-			is_drawing_obj = false;
-			clear_color = CLEAR_COLOR_DEFAULT;
-			// print_object(objects->elems + objects->len - 1);
+		if (!ctrl_active)
+			ctrl_active = (e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
+
+		if (e->key_code == SAPP_KEYCODE_A && is_drawing_obj) {
+			object_end();
+			cmd_record((struct cmd){CMD_OBJECT_END});
 		}
+		if (ctrl_active && e->key_code == SAPP_KEYCODE_Z)
+			cmd_undo();
 		break;
 	case SAPP_EVENTTYPE_KEY_UP:
+		if (ctrl_active)
+			ctrl_active = !(e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		mouse_screen.x = e->mouse_x;
@@ -191,28 +319,17 @@ void event(const sapp_event *e)
 		}
 		if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
 			if (!is_drawing_obj) {
-				is_drawing_obj = true;
-				clear_color = (color) { .13, .2, .13, 1 };
-				struct object obj = {
-					.input_points  = da_point_create(DA_INITIAL_CAPACITY),
-					.input_starts  = da_int_create(DA_INITIAL_CAPACITY),
-					.stroke_starts = da_int_create(DA_INITIAL_CAPACITY),
-				};
-				pfh_vec2_buf_init(&obj.stroke_buf, DA_INITIAL_CAPACITY);
-				objects = da_object_append(objects, obj);
+				cmd_record((struct cmd){CMD_OBJECT_BEGIN});
+				object_begin();
 			}
-			is_drawing_stroke = true;
-			draw_stroke_start(
-				objects->elems + objects->len-1,
-				screen_to_world( (vec2) { e->mouse_x, e->mouse_y } ),
-				-1
-			);
+			draw_stroke_start(objects->elems + objects->len-1, screen_to_world((vec2){ e->mouse_x, e->mouse_y }), -1);
+			cmd_record((struct cmd){CMD_STROKE_START});
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_UP:
 		is_panning = is_panning && e->mouse_button != SAPP_MOUSEBUTTON_MIDDLE;
 		if (is_drawing_stroke) {
-			is_drawing_stroke = false;
+			draw_stroke_stop();
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_SCROLL:

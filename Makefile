@@ -6,10 +6,11 @@ BUILD_DIR = build
 
 BUILD ?= DEBUG
 CFLAGS = -Wall -I$(VENDOR_DIR) -fno-strict-aliasing
+LDFLAGS =
 
 ifeq ($(BUILD), RELEASE)
 	CFLAGS += -O2
-	LDFLAGS = -s
+	LDFLAGS += -s
 else
 	CFLAGS += -g -O0
 endif
@@ -21,6 +22,10 @@ ifeq ($(OS), Windows_NT)
 	RM = rmdir /s /q
 	# Black magic from gemini
 	MD = if not exist "$(subst /,\,$(@D))" mkdir "$(subst /,\,$(@D))"
+
+	ifeq ($(BUILD), RELEASE)
+		LDFLAGS += -mwindows
+	endif
 else
 	LIBS += -lGL -lm -lpthread -ldl -lrt -lX11
 	RM = rm -r
