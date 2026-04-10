@@ -1,8 +1,6 @@
 #define GLAD_GL_IMPLEMENTATION
 #include <glad2/gl.h>
 
-#define SOKOL_IMPL
-#define SOKOL_GLCORE
 #include <sokol/sokol_app.h>
 
 #define NANOVG_GL3_IMPLEMENTATION

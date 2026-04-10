@@ -27,9 +27,9 @@ ifeq ($(OS), Windows_NT)
 		LDFLAGS += -mwindows
 	endif
 else
-	LIBS += -lGL -lm -lpthread -ldl -lrt -lX11
+	LIBS += -lGL -lm -lpthread -ldl -lrt -lX11 -lXi -lXcursor
 	RM = rm -r
-	MD = mkdir -p $@
+	MD = mkdir -p $(dir $@)
 endif
 
 SRCS = $(wildcard $(SRC_DIR)/*.c) \
