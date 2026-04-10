@@ -15,7 +15,7 @@
 #include "ds.h"
 
 
-#define CMD_HIST_MAX 128
+#define CMD_HIST_MAX 256
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
 typedef struct { float x, y; } vec2;
@@ -35,20 +35,20 @@ struct object {
 };
 
 enum cmd_type {
-	CMD_OBJECT_BEGIN,
-	CMD_OBJECT_END,
-	CMD_STROKE_START,
+	CMD_NONE,
+	CMD_STROKE_MAKE,
 };
 
 struct cmd {
 	enum cmd_type type;
 	union {
 		vec2 input;
+		struct da_point *points;
 	} v;
 };
 
 struct cmd_hist {
-	size_t tail;
+	size_t end;
 	size_t cursor;
 	struct cmd cmds[CMD_HIST_MAX];
 };
@@ -77,9 +77,10 @@ static bool is_drawing_obj = false;
 static bool is_drawing_stroke = false;
 static struct da_object *objects;
 
+static struct cmd cmd_curr;
 static struct cmd_hist cmd_hist;
 
-static const pfh_stroke_opts stroke_opts = {
+static const pfh_stroke_opts STROKE_OPTS = {
 	.size = 12,
 	.thinning = .5,
 	.streamline = .5,
@@ -100,24 +101,38 @@ static const pfh_stroke_opts stroke_opts = {
 	.last = false,
 };
 
-static inline void cmd_record(struct cmd cmd)
+static void cmd_hist_record(struct cmd cmd)
 {
-	if (cmd_hist.cursor != cmd_hist.tail-1) {
-		/* Cleanup */
-		cmd_hist.tail = cmd_hist.cursor+1;
+	if (cmd_hist.cursor != cmd_hist.end-1) {
+		/* when we record but there's hist ahead */
+		/* TODO: Cmd cleanup goes here */
+		cmd_hist.end = cmd_hist.cursor+1;
 	}
-	printf("recorded %d\n", cmd.type);
 
-	cmd_hist.cmds[cmd_hist.tail++] = cmd;
-	cmd_hist.tail %= ARRAY_SIZE(cmd_hist.cmds);
-	cmd_hist.cursor = cmd_hist.tail-1;
+	cmd_hist_forget(++cmd_hist.end);
+	cmd_hist.cmds[cmd_hist.end] = cmd;
+	cmd_hist.end %= ARRAY_SIZE(cmd_hist.cmds);
+	cmd_hist.cursor = cmd_hist.end-1;
+}
+static void cmd_hist_forget(struct cmd cmd)
+{
+	switch(cmd.type) {
+	case CMD_NONE:
+		break;
+	case CMD_STROKE_MAKE:
+		free(cmd.v.points);
+		break;
+	default: 
+		break;
+	}
+	
 }
 
-static inline void cmd_undo()
+static void cmd_hist_undo(void)
 {
 	struct cmd cmd;
 
-	if (cmd_hist.cursor-1 == cmd_hist.tail-1)
+	if (cmd_hist.cursor-1 == cmd_hist.end-1)
 		return;
 
 	cmd = cmd_hist.cmds[cmd_hist.cursor];
@@ -126,41 +141,24 @@ static inline void cmd_undo()
 		cmd_hist.cursor = ARRAY_SIZE(cmd_hist.cmds)-1;
 
 	switch(cmd.type) {
-	case CMD_OBJECT_BEGIN:
-		break;
-	case CMD_OBJECT_END: 
-		break;
-	case CMD_STROKE_START:
-		struct object *obj = objects->elems + objects->len-1;
-		obj->input_starts->len--;
-		obj->input_points->len = obj->input_starts->elems[obj->input_starts->len];
-
-		obj->stroke_starts->len--;
-		obj->stroke_buf.len = obj->stroke_starts->elems[obj->stroke_starts->len];
-		pfh_get_stroke(
-			&obj->stroke_buf,
-			(pfh_point*)obj->input_points->elems + obj->input_starts->elems[obj->input_starts->len-1],
-			obj->input_points->len - obj->input_starts->elems[obj->input_starts->len-1],
-			&stroke_opts
-		);
+	case CMD_STROKE_MAKE:
+		delete_last_stroke();
 		break;
 	default: 
 		break;
 	}
 }
 
-static inline void cmd_redo()
+static void cmd_hist_redo(void)
 {
-	if (cmd_hist.cursor != cmd_hist.tail)
+	if (cmd_hist.cursor != cmd_hist.end)
 		cmd_hist.cursor++;
 	struct cmd cmd = cmd_hist.cmds[cmd_hist.cursor];
 
 	switch(cmd.type) {
-	case CMD_OBJECT_BEGIN:
+	case CMD_NONE:
 		break;
-	case CMD_OBJECT_END: 
-		break;
-	case CMD_STROKE_START: 
+	case CMD_STROKE_MAKE:
 		break;
 	default: 
 		break;
@@ -204,7 +202,7 @@ void print_objects(void)
 	}
 }
 
-void object_begin()
+void object_begin(void)
 {
 	is_drawing_obj = true;
 	clear_color = (color) { .11, .17, .11, 1 };
@@ -217,7 +215,7 @@ void object_begin()
 	objects = da_object_append(objects, obj);
 }
 
-void object_end()
+void object_end(void)
 {
 	is_drawing_obj = false;
 	clear_color = CLEAR_COLOR_DEFAULT;
@@ -228,6 +226,8 @@ void draw_stroke_continue(struct object *obj, vec2 input, float pressure)
 	size_t last_stroke_start_idx = obj->stroke_starts->elems[obj->stroke_starts->len-1];
 	size_t last_input_start_idx = obj->input_starts->elems[obj->input_starts->len-1];
 
+	cmd_curr.v.points = da_point_append(cmd_curr.v.points, (point){ input, pressure });
+
 	obj->input_points = da_point_append(obj->input_points, (point){ input, pressure });
 
 	// Regenerate the last stroke completely
@@ -236,21 +236,42 @@ void draw_stroke_continue(struct object *obj, vec2 input, float pressure)
 		&obj->stroke_buf,
 		(pfh_point*)obj->input_points->elems + last_input_start_idx,
 		obj->input_points->len - last_input_start_idx,
-		&stroke_opts
+		&STROKE_OPTS
 	);
 }
 
 void draw_stroke_start(struct object *obj, vec2 input, float pressure)
 {
 	is_drawing_stroke = true;
+	cmd_curr.type = CMD_STROKE_MAKE;
+	cmd_curr.v.points = da_point_create(DA_INITIAL_CAPACITY);
+
 	obj->input_starts = da_int_append(obj->input_starts, obj->input_points->len);
 	obj->stroke_starts = da_int_append(obj->stroke_starts, obj->stroke_buf.len);
+
 	draw_stroke_continue(obj, input, pressure);
 }
 
-void draw_stroke_stop()
+void draw_stroke_stop(void)
 {
 	is_drawing_stroke = false;
+	cmd_hist_record(cmd_curr);
+}
+
+void delete_last_stroke()
+{
+	struct object *obj = objects->elems + objects->len-1;
+	obj->input_starts->len--;
+	obj->input_points->len = obj->input_starts->elems[obj->input_starts->len];
+
+	obj->stroke_starts->len--;
+	obj->stroke_buf.len = obj->stroke_starts->elems[obj->stroke_starts->len];
+	pfh_get_stroke(
+		&obj->stroke_buf,
+		(pfh_point*)obj->input_points->elems + obj->input_starts->elems[obj->input_starts->len-1],
+		obj->input_points->len - obj->input_starts->elems[obj->input_starts->len-1],
+		&STROKE_OPTS
+	);
 }
 
 
@@ -285,10 +306,10 @@ void event(const sapp_event *e)
 
 		if (e->key_code == SAPP_KEYCODE_A && is_drawing_obj) {
 			object_end();
-			cmd_record((struct cmd){CMD_OBJECT_END});
+			/* cmd_hist_record((struct cmd){CMD_OBJECT_END}); */
 		}
 		if (ctrl_active && e->key_code == SAPP_KEYCODE_Z)
-			cmd_undo();
+			cmd_hist_undo();
 		break;
 	case SAPP_EVENTTYPE_KEY_UP:
 		if (ctrl_active)
@@ -319,11 +340,11 @@ void event(const sapp_event *e)
 		}
 		if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
 			if (!is_drawing_obj) {
-				cmd_record((struct cmd){CMD_OBJECT_BEGIN});
+				/* cmd_hist_record((struct cmd){CMD_OBJECT_BEGIN}); */
 				object_begin();
 			}
 			draw_stroke_start(objects->elems + objects->len-1, screen_to_world((vec2){ e->mouse_x, e->mouse_y }), -1);
-			cmd_record((struct cmd){CMD_STROKE_START});
+			/* cmd_hist_record((struct cmd){CMD_STROKE_START}); */
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_UP:
