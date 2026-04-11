@@ -34,7 +34,7 @@ struct object {
 
 enum cmd_type {
 	CMD_NONE,
-	CMD_STROKE_MAKE,
+	CMD_STROKE_CREATE,
 };
 
 struct cmd {
@@ -55,7 +55,7 @@ DA_DEFINE(struct cmd, da_cmd)
 
 DA_DEFINE(struct object, da_object)
 
-static float zoomFrac = 0.1f;
+static float zoom_frac = 0.1f;
 
 static const color CLEAR_COLOR_DEFAULT = { .1f, .1f, .1f, .0f };
 static color clear_color = { .1f, .1f, .1f, 1.0f };
@@ -117,7 +117,7 @@ static void cmd_hist_forget(struct cmd cmd)
 	switch(cmd.type) {
 	case CMD_NONE:
 		break;
-	case CMD_STROKE_MAKE:
+	case CMD_STROKE_CREATE:
 		free(cmd.v.points);
 		break;
 	default: 
@@ -139,7 +139,7 @@ static void cmd_hist_undo(void)
 		cmd_hist.cursor = ARRAY_SIZE(cmd_hist.cmds)-1;
 
 	switch(cmd.type) {
-	case CMD_STROKE_MAKE:
+	case CMD_STROKE_CREATE:
 		delete_last_stroke();
 		break;
 	default: 
@@ -156,7 +156,7 @@ static void cmd_hist_redo(void)
 	switch(cmd.type) {
 	case CMD_NONE:
 		break;
-	case CMD_STROKE_MAKE:
+	case CMD_STROKE_CREATE:
 		break;
 	default: 
 		break;
@@ -241,7 +241,7 @@ void draw_stroke_continue(struct object *obj, vec2 input, float pressure)
 void draw_stroke_start(struct object *obj, vec2 input, float pressure)
 {
 	is_drawing_stroke = true;
-	cmd_curr.type = CMD_STROKE_MAKE;
+	cmd_curr.type = CMD_STROKE_CREATE;
 	cmd_curr.v.points = da_point_create(DA_INITIAL_CAPACITY);
 
 	obj->input_starts = da_int_append(obj->input_starts, obj->input_points->len);
@@ -253,7 +253,6 @@ void draw_stroke_start(struct object *obj, vec2 input, float pressure)
 void draw_stroke_stop(void)
 {
 	is_drawing_stroke = false;
-	cmd_hist_record(cmd_curr);
 }
 
 void delete_last_stroke()
@@ -352,7 +351,7 @@ void event(const sapp_event *e)
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_SCROLL:
-		float ratio = (1 + zoomFrac * e->scroll_y);
+		float ratio = (1 + zoom_frac * e->scroll_y);
 		zoom *= ratio;
 		
 		// (World - OldCamera) * OldZoom = (World - NewCamera) * NewZoom
@@ -431,3 +430,4 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 		
 	};
 }
+
