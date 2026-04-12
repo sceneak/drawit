@@ -25,7 +25,7 @@
 	        else                                                                                            \
 	                alloc->capacity = capacity;                                                             \
 	        return alloc;                                                                                   \
-	}
+	}                                                                                                       \
 	NO_DISCARD static inline struct name *name##_expand(struct name *da, int extra)                 \
 	{                                                                                               \
 	        struct name *temp;                                                                      \
@@ -50,7 +50,7 @@
 	        name##_expand(da, 1);                                                                           \
 	        da->elems[da->len-1] = elem;                                                                    \
 	        return da;                                                                                      \
-	}
+	}                                                                                                       \
 	NO_DISCARD static inline struct name *name##_append_many(struct name *da, type elem[], int len)         \
 	{                                                                                                       \
 	        int i;                                                                                          \
