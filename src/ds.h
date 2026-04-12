@@ -7,6 +7,9 @@
 #include <assert.h>
 #include "util.h"
 
+#define RINGBUF_INCR(idx, len, n) ( ((idx)+(n)) % (len) )
+#define RINGBUF_DECR(idx, len, n) ( ((idx)+ (len)-((n) % (len))) % (len) )
+
 #define DA_INITIAL_CAPACITY 64
 
 #define DA_DEFINE(type, name)                                                                                   \
@@ -35,7 +38,7 @@
 	        if (new_capacity == da->capacity)                                                       \
 	                return da;                                                                      \
 	                                                                                                \
-	        struct name *temp = realloc(da, sizeof(struct name) + new_capacity * sizeof(type);      \
+	        temp = realloc(da, sizeof(struct name) + new_capacity * sizeof(type));                  \
 	        if (!temp)                                                                              \
 	        {                                                                                       \
 	                fputs("Allocation failure: buy more ram lol", stderr);                          \
@@ -47,15 +50,15 @@
 	}                                                                                                       \
 	NO_DISCARD static inline struct name *name##_append(struct name *da, type elem)                         \
 	{                                                                                                       \
-	        name##_expand(da, 1);                                                                           \
+	        da = name##_expand(da, 1);                                                                      \
 	        da->elems[da->len-1] = elem;                                                                    \
 	        return da;                                                                                      \
 	}                                                                                                       \
-	NO_DISCARD static inline struct name *name##_append_many(struct name *da, type elem[], int len)         \
+	NO_DISCARD static inline struct name *name##_append_n(struct name *da, type elem[], int n)              \
 	{                                                                                                       \
 	        int i;                                                                                          \
-	        name##_expand(da, len);                                                                         \
-	        for (i = 0; i < len; i++)                                                                       \
+	        da = name##_expand(da, n);                                                                      \
+	        for (i = 0; i < n; i++)                                                                         \
 	                da->elems[i] = elem[i];                                                                 \
 	        return da;                                                                                      \
 	}
