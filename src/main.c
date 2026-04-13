@@ -314,6 +314,7 @@ void event(const sapp_event *e)
 			/* object_end(); */
 			/* cmd_hist_record((struct cmd){CMD_OBJECT_END}); */
 		}
+		/* TODO: These can screw things up if cmd_curr is ongoing */
 		if (ctrl_held && e->key_code == SAPP_KEYCODE_Z)
 			cmd_hist_undo();
 		if (ctrl_held && e->key_code == SAPP_KEYCODE_R)

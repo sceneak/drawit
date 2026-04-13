@@ -12,7 +12,8 @@ ifeq ($(BUILD), RELEASE)
 	CFLAGS += -O2
 	LDFLAGS += -s
 else
-	CFLAGS += -g -O0
+	CFLAGS += -g3 -O0 -fsanitize=address,undefined
+	LDFLAGS += -fsanitize=address,undefined -ftrack-macro-expansion
 endif
 
 TARGET_BIN = $(BUILD_DIR)/$(TARGET)
