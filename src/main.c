@@ -10,9 +10,6 @@
 #define PFH_IMPLEMENTATION
 #include <perfect-freehand/pfh.h>
 
-#include "ds.h"
-
-
 #define CMD_HIST_MAX 256
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
@@ -22,8 +19,13 @@ typedef struct { float r, g, b, a; } color;
 
 typedef struct { vec2 coord; float pressure; } point;
 
-DA_DEFINE(point, da_point)
-DA_DEFINE(int, da_int)
+#define T point
+#define name da_point
+#include "da.t.h"
+
+#define T int
+#define name da_int
+#include "da.t.h"
 
 struct object {
 	struct da_int   *input_starts;
@@ -52,9 +54,14 @@ struct cmd_hist {
 	struct cmd cmds[CMD_HIST_MAX];
 };
 
-DA_DEFINE(struct cmd, da_cmd)
 
-DA_DEFINE(struct object, da_object)
+#define T struct cmd
+#define name da_cmd
+#include "da.t.h"
+
+#define T struct object
+#define name da_object
+#include "da.t.h"
 
 static float zoom_frac = 0.1f;
 

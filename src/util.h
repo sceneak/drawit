@@ -9,5 +9,10 @@
 	#define NO_DISCARD
 #endif
 
-#endif
+#define RINGBUF_INCR(idx, len, n) ( ((idx)+(n)) % (len) )
+#define RINGBUF_DECR(idx, len, n) ( ((idx)+ (len)-((n) % (len))) % (len) )
 
+#define _CAT(a, b) a##b
+#define CAT(a, b) _CAT(a, b)
+
+#endif
