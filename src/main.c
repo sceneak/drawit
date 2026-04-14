@@ -1,8 +1,6 @@
 #define GLAD_GL_IMPLEMENTATION
 #include <glad2/gl.h>
 
-#define SOKOL_IMPL
-#define SOKOL_GLCORE
 #include <sokol/sokol_app.h>
 
 #define NANOVG_GL3_IMPLEMENTATION
@@ -12,10 +10,7 @@
 #define PFH_IMPLEMENTATION
 #include <perfect-freehand/pfh.h>
 
-#include "ds.h"
-
-
-#define CMD_HIST_MAX 128
+#define CMD_HIST_MAX 256
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 
 typedef struct { float x, y; } vec2;
@@ -24,8 +19,13 @@ typedef struct { float r, g, b, a; } color;
 
 typedef struct { vec2 coord; float pressure; } point;
 
-DA_DEFINE(point, da_point)
-DA_DEFINE(int, da_int)
+#define T point
+#define name da_point
+#include "da.t.h"
+
+#define T int
+#define name da_int
+#include "da.t.h"
 
 struct object {
 	struct da_int   *input_starts;
@@ -35,32 +35,38 @@ struct object {
 };
 
 enum cmd_type {
-	CMD_OBJECT_BEGIN,
-	CMD_OBJECT_END,
-	CMD_STROKE_START,
+	CMD_NONE,
+	CMD_STROKE_CREATE,
+	CMD_STROKE_DELETE,
 };
 
 struct cmd {
 	enum cmd_type type;
 	union {
-		vec2 input;
+		struct da_point *points; 
 	} v;
 };
 
 struct cmd_hist {
-	size_t tail;
-	size_t cursor;
+	size_t before_first;
+	size_t last;
+	long cursor;
 	struct cmd cmds[CMD_HIST_MAX];
 };
 
-DA_DEFINE(struct cmd, da_cmd)
 
-DA_DEFINE(struct object, da_object)
+#define T struct cmd
+#define name da_cmd
+#include "da.t.h"
 
-static float zoomFrac = 0.1f;
+#define T struct object
+#define name da_object
+#include "da.t.h"
+
+static float zoom_frac = 0.1f;
 
 static const color CLEAR_COLOR_DEFAULT = { .1f, .1f, .1f, .0f };
-static color clear_color = { .1f, .1f, .1f, 1.0f };
+static color clear_color;
 
 static int screen_width, screen_height;
 static NVGcontext *vg;
@@ -77,9 +83,10 @@ static bool is_drawing_obj = false;
 static bool is_drawing_stroke = false;
 static struct da_object *objects;
 
+static struct cmd cmd_curr;
 static struct cmd_hist cmd_hist;
 
-static const pfh_stroke_opts stroke_opts = {
+static const pfh_stroke_opts STROKE_OPTS = {
 	.size = 12,
 	.thinning = .5,
 	.streamline = .5,
@@ -100,73 +107,6 @@ static const pfh_stroke_opts stroke_opts = {
 	.last = false,
 };
 
-static inline void cmd_record(struct cmd cmd)
-{
-	if (cmd_hist.cursor != cmd_hist.tail-1) {
-		/* Cleanup */
-		cmd_hist.tail = cmd_hist.cursor+1;
-	}
-	printf("recorded %d\n", cmd.type);
-
-	cmd_hist.cmds[cmd_hist.tail++] = cmd;
-	cmd_hist.tail %= ARRAY_SIZE(cmd_hist.cmds);
-	cmd_hist.cursor = cmd_hist.tail-1;
-}
-
-static inline void cmd_undo()
-{
-	struct cmd cmd;
-
-	if (cmd_hist.cursor-1 == cmd_hist.tail-1)
-		return;
-
-	cmd = cmd_hist.cmds[cmd_hist.cursor];
-	cmd_hist.cursor--;
-	if (cmd_hist.cursor < 0)
-		cmd_hist.cursor = ARRAY_SIZE(cmd_hist.cmds)-1;
-
-	switch(cmd.type) {
-	case CMD_OBJECT_BEGIN:
-		break;
-	case CMD_OBJECT_END: 
-		break;
-	case CMD_STROKE_START:
-		struct object *obj = objects->elems + objects->len-1;
-		obj->input_starts->len--;
-		obj->input_points->len = obj->input_starts->elems[obj->input_starts->len];
-
-		obj->stroke_starts->len--;
-		obj->stroke_buf.len = obj->stroke_starts->elems[obj->stroke_starts->len];
-		pfh_get_stroke(
-			&obj->stroke_buf,
-			(pfh_point*)obj->input_points->elems + obj->input_starts->elems[obj->input_starts->len-1],
-			obj->input_points->len - obj->input_starts->elems[obj->input_starts->len-1],
-			&stroke_opts
-		);
-		break;
-	default: 
-		break;
-	}
-}
-
-static inline void cmd_redo()
-{
-	if (cmd_hist.cursor != cmd_hist.tail)
-		cmd_hist.cursor++;
-	struct cmd cmd = cmd_hist.cmds[cmd_hist.cursor];
-
-	switch(cmd.type) {
-	case CMD_OBJECT_BEGIN:
-		break;
-	case CMD_OBJECT_END: 
-		break;
-	case CMD_STROKE_START: 
-		break;
-	default: 
-		break;
-	}
-}
-
 static inline vec2 screen_to_world(vec2 screen)
 {
 	return (vec2){
@@ -175,39 +115,31 @@ static inline vec2 screen_to_world(vec2 screen)
 	};
 }
 
-void print_object(const struct object *obj) 
+/************ OBJ & STROKE ************/
+
+void object_print(const struct object *obj) 
 {
 	int i;
-	printf("	input_starts (%llu): ", obj->input_starts->len);
+	printf("	input_starts (%zu): ", obj->input_starts->len);
 	for (i = 0; i < obj->input_starts->len; i++)
 		printf("%d ", obj->input_starts->elems[i]);
 	puts("");
-	printf("	input_points (%llu)\n", obj->input_points->len);
+	printf("	input_points (%zu)\n", obj->input_points->len);
 
-	printf("	stroke_starts (%llu): ", obj->stroke_starts->len);
+	printf("	stroke_starts (%zu): ", obj->stroke_starts->len);
 	for (i = 0; i < obj->stroke_starts->len; i++)
 		printf("%d ", obj->stroke_starts->elems[i]);
 	puts("");
 
-	printf("	stroke_elems (%llu): ", obj->stroke_buf.len);
+	printf("	stroke_elems (%zu): ", obj->stroke_buf.len);
 	for (i = 0; i < obj->stroke_buf.len; i++)
 		printf("(%.1f %.1f) ", obj->stroke_buf.elems[i].x, obj->stroke_buf.elems[i].y);
 	puts("");
 }
 
-void print_objects(void)
-{
-	int i;
-	for (i = 0; i < objects->len; i++) {
-		printf("[%d] Object\n", i);
-		print_object(objects->elems + i);
-	}
-}
-
-void object_begin()
+void object_begin(void)
 {
 	is_drawing_obj = true;
-	clear_color = (color) { .11, .17, .11, 1 };
 	struct object obj = {
 		.input_points  = da_point_create(DA_INITIAL_CAPACITY),
 		.input_starts  = da_int_create(DA_INITIAL_CAPACITY),
@@ -217,47 +149,142 @@ void object_begin()
 	objects = da_object_append(objects, obj);
 }
 
-void object_end()
-{
-	is_drawing_obj = false;
-	clear_color = CLEAR_COLOR_DEFAULT;
-}
-
-void draw_stroke_continue(struct object *obj, vec2 input, float pressure)
+void bake_last_stroke(struct object *obj)
 {
 	size_t last_stroke_start_idx = obj->stroke_starts->elems[obj->stroke_starts->len-1];
 	size_t last_input_start_idx = obj->input_starts->elems[obj->input_starts->len-1];
 
-	obj->input_points = da_point_append(obj->input_points, (point){ input, pressure });
-
-	// Regenerate the last stroke completely
 	obj->stroke_buf.len = last_stroke_start_idx;
 	pfh_get_stroke(
 		&obj->stroke_buf,
 		(pfh_point*)obj->input_points->elems + last_input_start_idx,
 		obj->input_points->len - last_input_start_idx,
-		&stroke_opts
+		&STROKE_OPTS
 	);
 }
 
-void draw_stroke_start(struct object *obj, vec2 input, float pressure)
+void stroke_start(struct object *obj)
 {
-	is_drawing_stroke = true;
 	obj->input_starts = da_int_append(obj->input_starts, obj->input_points->len);
 	obj->stroke_starts = da_int_append(obj->stroke_starts, obj->stroke_buf.len);
-	draw_stroke_continue(obj, input, pressure);
 }
 
-void draw_stroke_stop()
+void stroke_append_point(struct object *obj, point pt)
 {
-	is_drawing_stroke = false;
+	obj->input_points = da_point_append(obj->input_points, pt);
+	bake_last_stroke(obj);
 }
 
+void stroke_append_points(struct object *obj, point points[], int len)
+{
+	obj->input_points = da_point_append_n(obj->input_points, points, len);
+	bake_last_stroke(obj);
+}
+
+void stroke_delete_last(struct object *obj)
+{
+	obj->input_starts->len--;
+	obj->input_points->len = obj->input_starts->elems[obj->input_starts->len];
+
+	obj->stroke_starts->len--;
+	obj->stroke_buf.len = obj->stroke_starts->elems[obj->stroke_starts->len];
+	pfh_get_stroke(
+		&obj->stroke_buf,
+		(pfh_point*)obj->input_points->elems + obj->input_starts->elems[obj->input_starts->len-1],
+		obj->input_points->len - obj->input_starts->elems[obj->input_starts->len-1],
+		&STROKE_OPTS
+	);
+}
+
+/************ COMMAND ************/
+
+static void cmd_hist_forget(struct cmd *cmd)
+{
+	switch(cmd->type) {
+	case CMD_STROKE_DELETE:
+	case CMD_STROKE_CREATE:
+		free(cmd->v.points);
+		break;
+	default: break;
+	}
+	cmd->type = CMD_NONE;
+}
+
+static void cmd_hist_record(struct cmd cmd)
+{
+	cmd_hist.cursor = RINGBUF_INCR(cmd_hist.cursor, ARRAY_SIZE(cmd_hist.cmds), 1);
+	cmd_hist_forget(cmd_hist.cmds + cmd_hist.cursor);
+	cmd_hist.cmds[cmd_hist.cursor] = cmd;
+
+	cmd_hist.last = cmd_hist.cursor;
+
+	if (cmd_hist.before_first == cmd_hist.last)
+		cmd_hist.before_first = RINGBUF_INCR(cmd_hist.before_first, ARRAY_SIZE(cmd_hist.cmds), 1);
+}
+
+static void cmd_stroke_create(struct cmd cmd)
+{
+	stroke_start(objects->elems + objects->len-1);
+	stroke_append_points(
+		objects->elems + objects->len-1,
+		cmd.v.points->elems,
+		cmd.v.points->len
+	);
+}
+
+static void cmd_hist_undo(void)
+{
+	struct cmd cmd;
+
+	if (cmd_hist.cursor == cmd_hist.before_first) {
+		puts("Hit end of undo history");
+		return;
+	}
+
+	cmd = cmd_hist.cmds[cmd_hist.cursor];
+	cmd_hist.cursor = RINGBUF_DECR(cmd_hist.cursor, ARRAY_SIZE(cmd_hist.cmds), 1);
+
+	switch(cmd.type) {
+	case CMD_STROKE_DELETE:
+		cmd_stroke_create(cmd);
+		break;
+	case CMD_STROKE_CREATE:
+		stroke_delete_last(objects->elems + objects->len-1);
+		break;
+	default: break;
+	}
+}
+
+static void cmd_hist_redo(void)
+{
+	struct cmd cmd;
+
+	if (cmd_hist.cursor == cmd_hist.last) {
+		puts("Already at newest change");
+		return;
+	}
+
+	cmd_hist.cursor = RINGBUF_INCR(cmd_hist.cursor, ARRAY_SIZE(cmd_hist.cmds), 1);
+	cmd = cmd_hist.cmds[cmd_hist.cursor];
+
+	switch(cmd.type) {
+	case CMD_STROKE_DELETE:
+		stroke_delete_last(objects->elems + objects->len-1);
+		break;
+	case CMD_STROKE_CREATE:
+		cmd_stroke_create(cmd);
+		break;
+	default: break;
+	}
+}
+
+/************ SOKOL APP ************/
 
 void init(void) 
 {
 	objects = da_object_create(DA_INITIAL_CAPACITY);
 
+	clear_color = CLEAR_COLOR_DEFAULT;
 	screen_width = sapp_width();
 	screen_height = sapp_height();
 	gladLoaderLoadGL();
@@ -272,7 +299,17 @@ void cleanup(void)
 
 void event(const sapp_event *e)
 {
-	static bool ctrl_active = false;
+	static bool ctrl_held = false;
+	point pt;
+
+	switch(e->type) {
+	case SAPP_EVENTTYPE_MOUSE_MOVE:
+	case SAPP_EVENTTYPE_MOUSE_DOWN:
+	case SAPP_EVENTTYPE_MOUSE_UP:
+		pt = (point) { screen_to_world((vec2){ e->mouse_x, e->mouse_y }), -1 };
+		break;
+	default: break;
+	}
 
 	switch(e->type) {
 	case SAPP_EVENTTYPE_RESIZED:
@@ -280,19 +317,23 @@ void event(const sapp_event *e)
 		screen_height = sapp_height();
 		break;
 	case SAPP_EVENTTYPE_KEY_DOWN:
-		if (!ctrl_active)
-			ctrl_active = (e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
+		if (!ctrl_held)
+			ctrl_held = (e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
 
 		if (e->key_code == SAPP_KEYCODE_A && is_drawing_obj) {
-			object_end();
-			cmd_record((struct cmd){CMD_OBJECT_END});
+			/* TODO: rethink this later */
+			/* object_end(); */
+			/* cmd_hist_record((struct cmd){CMD_OBJECT_END}); */
 		}
-		if (ctrl_active && e->key_code == SAPP_KEYCODE_Z)
-			cmd_undo();
+		/* TODO: These can screw things up if cmd_curr is ongoing */
+		if (ctrl_held && e->key_code == SAPP_KEYCODE_Z)
+			cmd_hist_undo();
+		if (ctrl_held && e->key_code == SAPP_KEYCODE_R)
+			cmd_hist_redo();
 		break;
 	case SAPP_EVENTTYPE_KEY_UP:
-		if (ctrl_active)
-			ctrl_active = !(e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
+		if (ctrl_held)
+			ctrl_held = !(e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		mouse_screen.x = e->mouse_x;
@@ -304,11 +345,8 @@ void event(const sapp_event *e)
 			camera.y = pan_pivot_camera.y + (mouse_screen.y - pan_pivot_mouse.y)/zoom;
 		}
 		if (is_drawing_stroke) {
-			draw_stroke_continue(
-				objects->elems + objects->len-1,
-				screen_to_world( (vec2) { e->mouse_x, e->mouse_y } ),
-				-1
-			);
+			stroke_append_point(objects->elems + objects->len-1, pt);
+			cmd_curr.v.points = da_point_append(cmd_curr.v.points, pt);
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
@@ -319,29 +357,36 @@ void event(const sapp_event *e)
 		}
 		if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
 			if (!is_drawing_obj) {
-				cmd_record((struct cmd){CMD_OBJECT_BEGIN});
+				/* cmd_hist_record((struct cmd){CMD_OBJECT_BEGIN}); */
 				object_begin();
 			}
-			draw_stroke_start(objects->elems + objects->len-1, screen_to_world((vec2){ e->mouse_x, e->mouse_y }), -1);
-			cmd_record((struct cmd){CMD_STROKE_START});
+
+			stroke_start(objects->elems + objects->len-1);
+			is_drawing_stroke = true;
+
+			cmd_curr.type = CMD_STROKE_CREATE;
+			cmd_curr.v.points = da_point_create(DA_INITIAL_CAPACITY);
+
+			stroke_append_point( objects->elems + objects->len-1, pt);
+			cmd_curr.v.points = da_point_append(cmd_curr.v.points, pt);
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_UP:
 		is_panning = is_panning && e->mouse_button != SAPP_MOUSEBUTTON_MIDDLE;
 		if (is_drawing_stroke) {
-			draw_stroke_stop();
+			is_drawing_stroke = false;
+			cmd_hist_record(cmd_curr);
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_SCROLL:
-		float ratio = (1 + zoomFrac * e->scroll_y);
+		float ratio = (1 + zoom_frac * e->scroll_y);
 		zoom *= ratio;
 		
 		// (World - OldCamera) * OldZoom = (World - NewCamera) * NewZoom
 		camera.x = mouse_world.x - (mouse_world.x - camera.x) / ratio;
 		camera.y = mouse_world.y - (mouse_world.y - camera.y) / ratio;
 		break;
-	default:
-		break;
+	default: break;
 	}
 }
 
@@ -412,3 +457,4 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 		
 	};
 }
+

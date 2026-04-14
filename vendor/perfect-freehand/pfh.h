@@ -87,57 +87,57 @@ void pfh_get_stroke_outline_points(pfh_vec2_buf *dest, const pfh_stroke_point st
 #define PFH_buf_INIT_CAPACITY 64
 #define pfh_max(a, b) ( (a) > (b) ? (a) : (b) )
 #define pfh_valid_pressure(p) (p >= 0)
-#define pfh_buf_init(buf, capacity)             \
-	do                                        \
-	{                                         \
-		memset(buf, 0, sizeof(*(buf))); \
-		pfh_buf_reserve(buf, capacity); \
+#define pfh_buf_init(buf, capacity)              \
+	do                                       \
+	{                                        \
+	        memset(buf, 0, sizeof(*(buf)));  \
+	        pfh_buf_reserve(buf, capacity);  \
 	} while (0)
-#define pfh_buf_deinit(buf)                     \
-	do                                        \
-	{                                         \
-		pfh_free((buf)->elems);          \
-		memset(buf, 0, sizeof(*(buf))); \
+#define pfh_buf_deinit(buf)                      \
+	do                                       \
+	{                                        \
+	        pfh_free((buf)->elems);          \
+	        memset(buf, 0, sizeof(*(buf)));  \
 	} while (0)
-#define pfh_buf_reserve(buf, total)                                      \
-        do                                                                 \
-        {                                                                  \
-                if (total >= (buf)->capacity)                             \
-                {                                                          \
-                        if ((buf)->capacity == 0)                         \
-                                (buf)->capacity = PFH_buf_INIT_CAPACITY; \
-                                                                           \
-                        while (total >= (buf)->capacity)                  \
-                                (buf)->capacity *= PFH_buf_GROW_FACTOR;  \
-                        (buf)->elems = pfh_realloc(                       \
-                            (buf)->elems,                                 \
-                            (buf)->capacity * sizeof(*(buf)->elems));    \
-                        assert((buf)->elems && "OOM. buy more ram lol");  \
-                }                                                          \
-        } while (0)
+#define pfh_buf_reserve(buf, total)                                       \
+	do                                                                \
+	{                                                                 \
+	        if (total >= (buf)->capacity)                             \
+	        {                                                         \
+	                if ((buf)->capacity == 0)                         \
+	                        (buf)->capacity = PFH_buf_INIT_CAPACITY;  \
+	                                                                  \
+	                while (total >= (buf)->capacity)                  \
+	                        (buf)->capacity *= PFH_buf_GROW_FACTOR;   \
+	                (buf)->elems = pfh_realloc(                       \
+	                    (buf)->elems,                                 \
+	                    (buf)->capacity * sizeof(*(buf)->elems));     \
+	                assert((buf)->elems && "OOM. buy more ram lol");  \
+	        }                                                         \
+	} while (0)
 #define pfh_buf_push_raw(buf, elem) (buf)->elems[(buf)->len++] = (elem);
 #define pfh_buf_push(buf, elem)                        \
-        do                                               \
-        {                                                \
-                pfh_buf_reserve(buf, (buf)->len + 1); \
-                pfh_buf_push_raw(buf, elem);           \
-        } while (0)
-#define pfh_buf_left_concat(left, right)                                                                    \
-        do                                                                                                   \
-        {                                                                                                    \
-                pfh_buf_reserve(left, (left)->len + (right)->len);                                          \
-                memcpy((left)->elems + (left)->len, (right)->elems, (right)->len * sizeof(*(right)->elems)); \
-                (left)->len += (right)->len;                                                                 \
-        } while (0)
-#define pfh_buf_left_concat_reverse(left, right)                   \
-        do                                                          \
-        {                                                           \
-                pfh_buf_reserve(left, (left)->len + (right)->len); \
-                for (size_t i = (right)->len; i-- > 0;)             \
-                {                                                   \
-                        pfh_buf_push_raw(left, (right)->elems[i]); \
-                }                                                   \
-        } while (0)
+	do                                             \
+	{                                              \
+	        pfh_buf_reserve(buf, (buf)->len + 1);  \
+	        pfh_buf_push_raw(buf, elem);           \
+	} while (0)
+#define pfh_buf_left_concat(left, right)                                                                     \
+	do                                                                                                   \
+	{                                                                                                    \
+	        pfh_buf_reserve(left, (left)->len + (right)->len);                                           \
+	        memcpy((left)->elems + (left)->len, (right)->elems, (right)->len * sizeof(*(right)->elems)); \
+	        (left)->len += (right)->len;                                                                 \
+	} while (0)
+#define pfh_buf_left_concat_reverse(left, right)                    \
+	do                                                          \
+	{                                                           \
+	        pfh_buf_reserve(left, (left)->len + (right)->len);  \
+	        for (size_t i = (right)->len; i-- > 0;)             \
+	        {                                                   \
+	                pfh_buf_push_raw(left, (right)->elems[i]);  \
+	        }                                                   \
+	} while (0)
 
 // Placeholder for initial vector & creating 2nd point when only one is provided.
 static const pfh_vec2 UNIT_OFFSET = {1, 1};
