@@ -9,11 +9,10 @@ CFLAGS = -Wall -I$(VENDOR_DIR) -fno-strict-aliasing
 LDFLAGS =
 
 ifeq ($(BUILD), RELEASE)
-	CFLAGS += -O2
-	LDFLAGS += -s
+	CFLAGS += -O2 -flto
+	LDFLAGS += -s -flto
 else
-	CFLAGS += -g3 -O0 -fsanitize=address,undefined
-	LDFLAGS += -fsanitize=address,undefined -ftrack-macro-expansion
+	CFLAGS += -g3 -O0
 endif
 
 TARGET_BIN = $(BUILD_DIR)/$(TARGET)
@@ -30,6 +29,10 @@ ifeq ($(OS), Windows_NT)
 else
 	LIBS += -lGL -lm -lpthread -ldl -lrt -lX11 -lXi -lXcursor
 	RM = rm -r
+	ifeq ($(BUILD), DEBUG)
+		CFLAGS += -fsanitize=address,undefined
+		LDFLAGS += -fsanitize=address,undefined -ftrack-macro-expansion
+	endif
 	MD = mkdir -p $(dir $@)
 endif
 
