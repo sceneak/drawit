@@ -48,8 +48,8 @@ struct cmd {
 };
 
 struct cmd_hist {
-	size_t start;
-	size_t end;
+	size_t before_first;
+	size_t last;
 	long cursor;
 	struct cmd cmds[CMD_HIST_MAX];
 };
@@ -216,10 +216,10 @@ static void cmd_hist_record(struct cmd cmd)
 	cmd_hist_forget(cmd_hist.cmds + cmd_hist.cursor);
 	cmd_hist.cmds[cmd_hist.cursor] = cmd;
 
-	cmd_hist.end = cmd_hist.cursor;
+	cmd_hist.last = cmd_hist.cursor;
 
-	if (cmd_hist.start == cmd_hist.end)
-		cmd_hist.start = RINGBUF_INCR(cmd_hist.start, ARRAY_SIZE(cmd_hist.cmds), 1);
+	if (cmd_hist.before_first == cmd_hist.last)
+		cmd_hist.before_first = RINGBUF_INCR(cmd_hist.before_first, ARRAY_SIZE(cmd_hist.cmds), 1);
 }
 
 static void cmd_stroke_create(struct cmd cmd)
@@ -236,11 +236,13 @@ static void cmd_hist_undo(void)
 {
 	struct cmd cmd;
 
-	if (cmd_hist.cursor == cmd_hist.start)
+	if (cmd_hist.cursor == cmd_hist.before_first) {
+		puts("Hit end of undo history");
 		return;
+	}
 
-	cmd_hist.cursor = RINGBUF_DECR(cmd_hist.cursor, ARRAY_SIZE(cmd_hist.cmds), 1);
 	cmd = cmd_hist.cmds[cmd_hist.cursor];
+	cmd_hist.cursor = RINGBUF_DECR(cmd_hist.cursor, ARRAY_SIZE(cmd_hist.cmds), 1);
 
 	switch(cmd.type) {
 	case CMD_STROKE_DELETE:
@@ -257,11 +259,13 @@ static void cmd_hist_redo(void)
 {
 	struct cmd cmd;
 
-	if (cmd_hist.cursor == cmd_hist.end)
+	if (cmd_hist.cursor == cmd_hist.last) {
+		puts("Already at newest change");
 		return;
+	}
 
-	cmd = cmd_hist.cmds[cmd_hist.cursor];
 	cmd_hist.cursor = RINGBUF_INCR(cmd_hist.cursor, ARRAY_SIZE(cmd_hist.cmds), 1);
+	cmd = cmd_hist.cmds[cmd_hist.cursor];
 
 	switch(cmd.type) {
 	case CMD_STROKE_DELETE:
