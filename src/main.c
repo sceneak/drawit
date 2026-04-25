@@ -13,10 +13,16 @@
 #define CMD_HIST_MAX 256
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
+#define COLOR_FROM_HEX(hex) (color) {     \
+               .r = ((hex) >> 24) & 0xFF, \
+               .g = ((hex) >> 16) & 0xFF, \
+               .b = ((hex) >> 8) & 0xFF,  \
+               .a = (hex) & 0xFF,         \
+        }
 
 typedef struct { float x, y; } vec2;
 typedef struct { float x, y, z; } vec3;
-typedef struct { float r, g, b, a; } color;
+typedef struct { unsigned char r, g, b, a; } color;
 
 typedef struct { vec2 coord; float pressure; } point;
 
@@ -51,7 +57,10 @@ enum cmd_type {
 struct cmd {
 	enum cmd_type type;
 	union {
-		struct da_point *point_da; 
+		struct {
+			struct da_point *point_da; 
+			color color;
+		} stroke_data;
 	} v;
 };
 
@@ -73,8 +82,15 @@ struct cmd_hist {
 
 static float zoom_frac = 0.1f;
 
-static const color CLEAR_COLOR_DEFAULT = { .1f, .1f, .1f, .0f };
+static const color CLEAR_COLOR_DEFAULT = { 25, 25, 25, 25 };
 static color clear_color;
+
+static const color STROKE_COLOR_SCENE = COLOR_FROM_HEX(0xCCFF00FF);
+static const color STROKE_COLOR_HOTPINK = COLOR_FROM_HEX(0xFF69B4FF);
+static const color STROKE_COLOR_TURQUOISE = COLOR_FROM_HEX(0x40E0D0FF);
+static color stroke_color;
+static color stroke_color_primary;
+static color stroke_color_secondary;
 
 static int screen_width, screen_height;
 static NVGcontext *vg;
@@ -138,7 +154,7 @@ void object_print(const struct object *obj)
 		printf("stroke[%d]\n", i);
 		printf("  input: idx %d, count %d\n", s->input_idx, s->input_count);
 		printf("  vertex: idx %d, count %d\n", s->vertex_idx, s->vertex_count);
-		printf("  color: (%f, %f, %f, %f)\n", s->color.r, s->color.g, s->color.b, s->color.a);
+		printf("  color: (%d, %d, %d, %d)\n", s->color.r, s->color.g, s->color.b, s->color.a);
 	}
 	puts("");
 }
@@ -167,11 +183,14 @@ void object_outline_last_stroke(struct object *obj)
 	);
 }
 
-void object_start_stroke(struct object *obj)
+void object_start_stroke(struct object *obj, color color)
 {
 	obj->stroke_da = da_stroke_append(obj->stroke_da, (struct stroke) { 
 		.input_idx = obj->input_da->count, 
+		.input_count = 0,
 		.vertex_idx = obj->vertex_pfh_buf.count, 
+		.vertex_count = 0,
+		.color = color,
 	});
 }
 
@@ -205,7 +224,7 @@ static void cmd_hist_forget(struct cmd *cmd)
 	switch(cmd->type) {
 	case CMD_STROKE_DELETE:
 	case CMD_STROKE_CREATE:
-		free(cmd->v.point_da);
+		free(cmd->v.stroke_data.point_da);
 		break;
 	default: break;
 	}
@@ -226,11 +245,11 @@ static void cmd_hist_record(struct cmd cmd)
 
 static void cmd_stroke_create(struct cmd cmd)
 {
-	object_start_stroke(object_da->elems + object_da->count-1);
+	object_start_stroke(object_da->elems + object_da->count-1, cmd.v.stroke_data.color);
 	object_append_points(
 		object_da->elems + object_da->count-1,
-		cmd.v.point_da->elems,
-		cmd.v.point_da->count
+		cmd.v.stroke_data.point_da->elems,
+		cmd.v.stroke_data.point_da->count
 	);
 }
 
@@ -287,6 +306,8 @@ void init(void)
 	object_da = da_object_create(DA_INITIAL_CAPACITY);
 
 	clear_color = CLEAR_COLOR_DEFAULT;
+	stroke_color_primary = STROKE_COLOR_SCENE;
+	stroke_color_secondary = STROKE_COLOR_HOTPINK;
 	screen_width = sapp_width();
 	screen_height = sapp_height();
 	gladLoaderLoadGL();
@@ -302,6 +323,7 @@ void cleanup(void)
 void event(const sapp_event *e)
 {
 	static bool ctrl_held = false;
+	static bool alt_held = false;
 	point pt;
 
 	switch(e->type) {
@@ -321,21 +343,36 @@ void event(const sapp_event *e)
 	case SAPP_EVENTTYPE_KEY_DOWN:
 		if (!ctrl_held)
 			ctrl_held = (e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
+		if (!alt_held)
+			alt_held = (e->key_code == SAPP_KEYCODE_LEFT_ALT || e-> key_code == SAPP_KEYCODE_RIGHT_ALT);
+
+		if (e->key_code == SAPP_KEYCODE_P)
+			object_print(object_da->elems + object_da->count-1);
 
 		if (e->key_code == SAPP_KEYCODE_A && is_drawing_obj) {
 			/* TODO: rethink this later */
 			/* object_end(); */
 			/* cmd_hist_record((struct cmd){CMD_OBJECT_END}); */
 		}
+
 		/* TODO: These can screw things up if cmd_curr is ongoing */
 		if (ctrl_held && e->key_code == SAPP_KEYCODE_Z)
 			cmd_hist_undo();
 		if (ctrl_held && e->key_code == SAPP_KEYCODE_R)
 			cmd_hist_redo();
+
+		if (e->key_code == SAPP_KEYCODE_1)
+			*(alt_held ? &stroke_color_secondary : &stroke_color_primary) = STROKE_COLOR_SCENE;
+		else if (e->key_code == SAPP_KEYCODE_2)
+			*(alt_held ? &stroke_color_secondary : &stroke_color_primary) = STROKE_COLOR_HOTPINK;
+		else if (e->key_code == SAPP_KEYCODE_3)
+			*(alt_held ? &stroke_color_secondary : &stroke_color_primary) = STROKE_COLOR_TURQUOISE;
 		break;
 	case SAPP_EVENTTYPE_KEY_UP:
 		if (ctrl_held)
 			ctrl_held = !(e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
+		if (!alt_held)
+			alt_held = (e->key_code == SAPP_KEYCODE_LEFT_ALT || e-> key_code == SAPP_KEYCODE_RIGHT_ALT);
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		mouse_screen.x = e->mouse_x;
@@ -348,7 +385,7 @@ void event(const sapp_event *e)
 		}
 		if (is_drawing_stroke) {
 			object_append_point(object_da->elems + object_da->count-1, pt);
-			cmd_curr.v.point_da = da_point_append(cmd_curr.v.point_da, pt);
+			cmd_curr.v.stroke_data.point_da = da_point_append(cmd_curr.v.stroke_data.point_da, pt);
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
@@ -357,20 +394,27 @@ void event(const sapp_event *e)
 			pan_pivot_mouse = mouse_screen;
 			pan_pivot_camera = camera;
 		}
-		if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+
+		if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT)
+			stroke_color = stroke_color_primary;
+		else if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT)
+			stroke_color = stroke_color_secondary;
+
+		if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT || e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
 			if (!is_drawing_obj) {
 				/* cmd_hist_record((struct cmd){CMD_OBJECT_BEGIN}); */
 				object_begin();
 			}
 
-			object_start_stroke(object_da->elems + object_da->count-1);
+			object_start_stroke(object_da->elems + object_da->count-1, stroke_color);
 			is_drawing_stroke = true;
 
 			cmd_curr.type = CMD_STROKE_CREATE;
-			cmd_curr.v.point_da = da_point_create(DA_INITIAL_CAPACITY);
+			cmd_curr.v.stroke_data.point_da = da_point_create(DA_INITIAL_CAPACITY);
+			cmd_curr.v.stroke_data.color = stroke_color;
 
 			object_append_point( object_da->elems + object_da->count-1, pt);
-			cmd_curr.v.point_da = da_point_append(cmd_curr.v.point_da, pt);
+			cmd_curr.v.stroke_data.point_da = da_point_append(cmd_curr.v.stroke_data.point_da, pt);
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_UP:
@@ -392,47 +436,56 @@ void event(const sapp_event *e)
 	}
 }
 
+void draw_object(struct object *obj)
+{
+	int i, stroke_idx, 
+	    curr_stroke_vert_idx, next_stroke_vert_idx;
+	color c;
+
+	stroke_idx = curr_stroke_vert_idx = next_stroke_vert_idx = 0;
+	for (i = 0; i < obj->vertex_pfh_buf.count; i++) {
+		const pfh_vec2 p0 = obj->vertex_pfh_buf.elems[i];
+
+		if (i == next_stroke_vert_idx) {
+			c = obj->stroke_da->elems[stroke_idx].color;
+
+			if (i > 0)
+				nvgFill(vg);
+			nvgBeginPath(vg);
+			nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
+
+			nvgMoveTo(vg, p0.x, -p0.y);
+			stroke_idx++;
+			curr_stroke_vert_idx = next_stroke_vert_idx;
+			next_stroke_vert_idx = stroke_idx < obj->stroke_da->count 
+				? obj->stroke_da->elems[stroke_idx].vertex_idx
+				: obj->vertex_pfh_buf.count;
+		}
+
+		const pfh_vec2 p1 = (i+1) == next_stroke_vert_idx
+			? obj->vertex_pfh_buf.elems[curr_stroke_vert_idx] /* last one needs to wrap back to start. */
+			: obj->vertex_pfh_buf.elems[i + 1];
+
+		nvgQuadTo(vg, p0.x, -p0.y, (p0.x + p1.x) / 2, -(p0.y + p1.y) / 2);
+	}
+	nvgFill(vg);
+}
+
 void draw_objects(void)
 {
-	int i, j, k;
-	struct object *obj;
+	int i;
 
-	for (i = 0; i < object_da->count; i++) {
-		obj = object_da->elems + i;
-
-		nvgBeginPath(vg);
-		nvgFillColor(vg, nvgRGBA(204, 255, 0, 255));
-
-		int curr_stroke_vertex_idx = 0, next_stroke_vertex_idx = 0;
-		for (j = k = 0; j < obj->vertex_pfh_buf.count; j++) {
-			const bool is_start = k < obj->stroke_da->count && j == next_stroke_vertex_idx;
-			const pfh_vec2 p0 = obj->vertex_pfh_buf.elems[j];
-
-			if (is_start) {
-				nvgMoveTo(vg, p0.x, -p0.y);
-				k++;
-				curr_stroke_vertex_idx = next_stroke_vertex_idx;
-				next_stroke_vertex_idx = k < obj->stroke_da->count 
-					? obj->stroke_da->elems[k].vertex_idx
-					: obj->vertex_pfh_buf.count;
-			}
-
-			const pfh_vec2 p1 = (j+1) == next_stroke_vertex_idx
-				? obj->vertex_pfh_buf.elems[curr_stroke_vertex_idx] /* last one needs to wrap back to start. */
-				: obj->vertex_pfh_buf.elems[j + 1];
-
-			nvgQuadTo(vg, p0.x, -p0.y, (p0.x + p1.x) / 2, -(p0.y + p1.y) / 2);
-		}
-		nvgFill(vg);
-	}
+	for (i = 0; i < object_da->count; i++)
+		draw_object(object_da->elems + i);
 }
 
 void frame(void) 
 {
 	float dpi = sapp_dpi_scale();
+	color c;
 
 	glViewport(0, 0, screen_width, screen_height);
-	glClearColor(clear_color.r, clear_color.g, clear_color.b, clear_color.a);
+	glClearColor(clear_color.r/255.0f, clear_color.g/255.0f, clear_color.b/255.0f, clear_color.a/255.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
 	nvgBeginFrame(vg, screen_width/dpi, screen_height/dpi, dpi);
@@ -442,10 +495,18 @@ void frame(void)
 
 		nvgBeginPath(vg);
 			nvgRect(vg, -25, -25, 50, 50);
-		nvgFillColor(vg, nvgRGBA(255, 192, 0, 255));
+		c = STROKE_COLOR_SCENE;
+		nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
 		nvgFill(vg);
 
 		draw_objects();
+
+		nvgBeginPath(vg);
+			nvgCircle(vg, mouse_world.x, -mouse_world.y, STROKE_OPTS.size/1.5);
+		c = stroke_color;
+		nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/2));
+		nvgFill(vg);
+		
 	nvgEndFrame(vg);
 }
 
