@@ -17,7 +17,7 @@
 struct name
 {
 	size_t capacity;
-	size_t len;
+	size_t count;
 	T elems[];
 };
 
@@ -36,10 +36,10 @@ NO_DISCARD static inline struct name *CAT(name, _append_empty)(struct name *da, 
 	struct name *temp;
 	int new_capacity = da->capacity;
 
-	while (da->len + extra >= new_capacity) new_capacity *= 2;
+	while (da->count + extra >= new_capacity) new_capacity *= 2;
 	if (new_capacity == da->capacity)
 	{
-		da->len += extra;
+		da->count += extra;
 		return da;
 	}
 
@@ -50,14 +50,14 @@ NO_DISCARD static inline struct name *CAT(name, _append_empty)(struct name *da, 
 		return NULL;
 	}
 	da = temp;
-	da->len += extra;
+	da->count += extra;
 	da->capacity = new_capacity;
 	return da;
 }
 NO_DISCARD static inline struct name *CAT(name, _append)(struct name *da, T elem)
 {
 	da = CAT(name, _append_empty)(da, 1);
-	da->elems[da->len-1] = elem;
+	da->elems[da->count-1] = elem;
 	return da;
 }
 NO_DISCARD static inline struct name *CAT(name, _append_n)(struct name *da, T elem[], int n)
@@ -65,7 +65,7 @@ NO_DISCARD static inline struct name *CAT(name, _append_n)(struct name *da, T el
 	int i;
 	da = CAT(name, _append_empty)(da, n);
 	for (i = 0; i < n; i++)
-		da->elems[da->len - n + i] = elem[i];
+		da->elems[da->count - n + i] = elem[i];
 	return da;
 }
 

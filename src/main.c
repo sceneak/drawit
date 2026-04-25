@@ -23,15 +23,22 @@ typedef struct { vec2 coord; float pressure; } point;
 #define name da_point
 #include "da.t.h"
 
-#define T int
-#define name da_int
+struct stroke {
+	int input_idx,
+	    input_count;
+	int vertex_idx,
+	    vertex_count;
+	color color;
+};
+
+#define T struct stroke
+#define name da_stroke
 #include "da.t.h"
 
 struct object {
-	struct da_int   *input_starts;
-	struct da_point *input_points;
-	struct da_int   *stroke_starts;
-	pfh_vec2_buf     stroke_buf;
+	struct da_point  *inputs;
+	pfh_vec2_buf      vertecies;
+	struct da_stroke *strokes;
 };
 
 enum cmd_type {
@@ -120,20 +127,20 @@ static inline vec2 screen_to_world(vec2 screen)
 void object_print(const struct object *obj) 
 {
 	int i;
-	printf("	input_starts (%zu): ", obj->input_starts->len);
-	for (i = 0; i < obj->input_starts->len; i++)
+	printf("	input_starts (%zu): ", obj->input_starts->count);
+	for (i = 0; i < obj->input_starts->count; i++)
 		printf("%d ", obj->input_starts->elems[i]);
 	puts("");
-	printf("	input_points (%zu)\n", obj->input_points->len);
+	printf("	inputs (%zu)\n", obj->inputs->count);
 
-	printf("	stroke_starts (%zu): ", obj->stroke_starts->len);
-	for (i = 0; i < obj->stroke_starts->len; i++)
+	printf("	stroke_starts (%zu): ", obj->stroke_starts->count);
+	for (i = 0; i < obj->stroke_starts->count; i++)
 		printf("%d ", obj->stroke_starts->elems[i]);
 	puts("");
 
-	printf("	stroke_elems (%zu): ", obj->stroke_buf.len);
-	for (i = 0; i < obj->stroke_buf.len; i++)
-		printf("(%.1f %.1f) ", obj->stroke_buf.elems[i].x, obj->stroke_buf.elems[i].y);
+	printf("	stroke_elems (%zu): ", obj->baked_points.count);
+	for (i = 0; i < obj->baked_points.count; i++)
+		printf("(%.1f %.1f) ", obj->baked_points.elems[i].x, obj->baked_points.elems[i].y);
 	puts("");
 }
 
@@ -141,57 +148,57 @@ void object_begin(void)
 {
 	is_drawing_obj = true;
 	struct object obj = {
-		.input_points  = da_point_create(DA_INITIAL_CAPACITY),
+		.inputs  = da_point_create(DA_INITIAL_CAPACITY),
 		.input_starts  = da_int_create(DA_INITIAL_CAPACITY),
 		.stroke_starts = da_int_create(DA_INITIAL_CAPACITY),
 	};
-	pfh_vec2_buf_init(&obj.stroke_buf, DA_INITIAL_CAPACITY);
+	pfh_vec2_buf_init(&obj.baked_points, DA_INITIAL_CAPACITY);
 	objects = da_object_append(objects, obj);
 }
 
 void bake_last_stroke(struct object *obj)
 {
-	size_t last_stroke_start_idx = obj->stroke_starts->elems[obj->stroke_starts->len-1];
-	size_t last_input_start_idx = obj->input_starts->elems[obj->input_starts->len-1];
+	size_t last_stroke_start_idx = obj->stroke_starts->elems[obj->stroke_starts->count-1];
+	size_t last_input_start_idx = obj->input_starts->elems[obj->input_starts->count-1];
 
-	obj->stroke_buf.len = last_stroke_start_idx;
+	obj->baked_points.count = last_stroke_start_idx;
 	pfh_get_stroke(
-		&obj->stroke_buf,
-		(pfh_point*)obj->input_points->elems + last_input_start_idx,
-		obj->input_points->len - last_input_start_idx,
+		&obj->baked_points,
+		(pfh_point*)obj->inputs->elems + last_input_start_idx,
+		obj->inputs->count - last_input_start_idx,
 		&STROKE_OPTS
 	);
 }
 
 void stroke_start(struct object *obj)
 {
-	obj->input_starts = da_int_append(obj->input_starts, obj->input_points->len);
-	obj->stroke_starts = da_int_append(obj->stroke_starts, obj->stroke_buf.len);
+	obj->input_starts = da_int_append(obj->input_starts, obj->inputs->count);
+	obj->stroke_starts = da_int_append(obj->stroke_starts, obj->baked_points.count);
 }
 
 void stroke_append_point(struct object *obj, point pt)
 {
-	obj->input_points = da_point_append(obj->input_points, pt);
+	obj->inputs = da_point_append(obj->inputs, pt);
 	bake_last_stroke(obj);
 }
 
-void stroke_append_points(struct object *obj, point points[], int len)
+void stroke_append_points(struct object *obj, point points[], int count)
 {
-	obj->input_points = da_point_append_n(obj->input_points, points, len);
+	obj->inputs = da_point_append_n(obj->inputs, points, count);
 	bake_last_stroke(obj);
 }
 
 void stroke_delete_last(struct object *obj)
 {
-	obj->input_starts->len--;
-	obj->input_points->len = obj->input_starts->elems[obj->input_starts->len];
+	obj->input_starts->count--;
+	obj->inputs->count = obj->input_starts->elems[obj->input_starts->count];
 
-	obj->stroke_starts->len--;
-	obj->stroke_buf.len = obj->stroke_starts->elems[obj->stroke_starts->len];
+	obj->stroke_starts->count--;
+	obj->baked_points.count = obj->stroke_starts->elems[obj->stroke_starts->count];
 	pfh_get_stroke(
-		&obj->stroke_buf,
-		(pfh_point*)obj->input_points->elems + obj->input_starts->elems[obj->input_starts->len-1],
-		obj->input_points->len - obj->input_starts->elems[obj->input_starts->len-1],
+		&obj->baked_points,
+		(pfh_point*)obj->inputs->elems + obj->input_starts->elems[obj->input_starts->count-1],
+		obj->inputs->count - obj->input_starts->elems[obj->input_starts->count-1],
 		&STROKE_OPTS
 	);
 }
@@ -224,11 +231,11 @@ static void cmd_hist_record(struct cmd cmd)
 
 static void cmd_stroke_create(struct cmd cmd)
 {
-	stroke_start(objects->elems + objects->len-1);
+	stroke_start(objects->elems + objects->count-1);
 	stroke_append_points(
-		objects->elems + objects->len-1,
+		objects->elems + objects->count-1,
 		cmd.v.points->elems,
-		cmd.v.points->len
+		cmd.v.points->count
 	);
 }
 
@@ -249,7 +256,7 @@ static void cmd_hist_undo(void)
 		cmd_stroke_create(cmd);
 		break;
 	case CMD_STROKE_CREATE:
-		stroke_delete_last(objects->elems + objects->len-1);
+		stroke_delete_last(objects->elems + objects->count-1);
 		break;
 	default: break;
 	}
@@ -269,7 +276,7 @@ static void cmd_hist_redo(void)
 
 	switch(cmd.type) {
 	case CMD_STROKE_DELETE:
-		stroke_delete_last(objects->elems + objects->len-1);
+		stroke_delete_last(objects->elems + objects->count-1);
 		break;
 	case CMD_STROKE_CREATE:
 		cmd_stroke_create(cmd);
@@ -345,7 +352,7 @@ void event(const sapp_event *e)
 			camera.y = pan_pivot_camera.y + (mouse_screen.y - pan_pivot_mouse.y)/zoom;
 		}
 		if (is_drawing_stroke) {
-			stroke_append_point(objects->elems + objects->len-1, pt);
+			stroke_append_point(objects->elems + objects->count-1, pt);
 			cmd_curr.v.points = da_point_append(cmd_curr.v.points, pt);
 		}
 		break;
@@ -361,13 +368,13 @@ void event(const sapp_event *e)
 				object_begin();
 			}
 
-			stroke_start(objects->elems + objects->len-1);
+			stroke_start(objects->elems + objects->count-1);
 			is_drawing_stroke = true;
 
 			cmd_curr.type = CMD_STROKE_CREATE;
 			cmd_curr.v.points = da_point_create(DA_INITIAL_CAPACITY);
 
-			stroke_append_point( objects->elems + objects->len-1, pt);
+			stroke_append_point( objects->elems + objects->count-1, pt);
 			cmd_curr.v.points = da_point_append(cmd_curr.v.points, pt);
 		}
 		break;
@@ -395,29 +402,29 @@ void draw_objects(void)
 	int i, j, k;
 	struct object *obj;
 
-	for (i = 0; i < objects->len; i++) {
+	for (i = 0; i < objects->count; i++) {
 		obj = objects->elems + i;
 
 		nvgBeginPath(vg);
 		nvgFillColor(vg, nvgRGBA(204, 255, 0, 255));
 
 		int curr_start = 0, next_start = 0;
-		for (j = k = 0; j < obj->stroke_buf.len; j++) {
-			const bool is_start = k < obj->stroke_starts->len && j == next_start;
-			const pfh_vec2 p0 = obj->stroke_buf.elems[j];
+		for (j = k = 0; j < obj->baked_points.count; j++) {
+			const bool is_start = k < obj->stroke_starts->count && j == next_start;
+			const pfh_vec2 p0 = obj->baked_points.elems[j];
 
 			if (is_start) {
 				nvgMoveTo(vg, p0.x, -p0.y);
 				k++;
 				curr_start = next_start;
-				next_start = k < obj->stroke_starts->len 
+				next_start = k < obj->stroke_starts->count 
 					? obj->stroke_starts->elems[k] 
-					: obj->stroke_buf.len;
+					: obj->baked_points.count;
 			}
 
 			const pfh_vec2 p1 = (j+1) == next_start
-				? obj->stroke_buf.elems[curr_start] // apparently the last one needs to wrap back to start.
-				: obj->stroke_buf.elems[j + 1];
+				? obj->baked_points.elems[curr_start] // apparently the last one needs to wrap back to start.
+				: obj->baked_points.elems[j + 1];
 
 			nvgQuadTo(vg, p0.x, -p0.y, (p0.x + p1.x) / 2, -(p0.y + p1.y) / 2);
 		}
