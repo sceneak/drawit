@@ -336,6 +336,8 @@ int object_closest_stroke_idx(const struct object *obj, vec2 v)
 	size_t i;
 
 	for (i = 0; i < obj->stroke_da->count; i++) {
+		if (obj->stroke_da->elems[i].deleted)
+			continue;
 		if (!rect_contains(obj->stroke_da->elems[i].bounds, v))
 			continue;
 		dist2 = object_stroke_dist(obj, i, v);
