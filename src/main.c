@@ -576,8 +576,8 @@ void event(const sapp_event *e)
 	case SAPP_EVENTTYPE_KEY_UP:
 		if (ctrl_held)
 			ctrl_held = !(e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
-		if (!alt_held)
-			alt_held = (e->key_code == SAPP_KEYCODE_LEFT_ALT || e-> key_code == SAPP_KEYCODE_RIGHT_ALT);
+		if (alt_held)
+			alt_held = !(e->key_code == SAPP_KEYCODE_LEFT_ALT || e-> key_code == SAPP_KEYCODE_RIGHT_ALT);
 		if (e->key_code == SAPP_KEYCODE_X) {
 			is_deleting_stroke = false;
 			draw_closest_stroke_bounds = false;
