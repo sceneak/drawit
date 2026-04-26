@@ -5,7 +5,7 @@ VENDOR_DIR = vendor
 BUILD_DIR = build
 
 BUILD ?= DEBUG
-CFLAGS = -Wall -I$(VENDOR_DIR) -fno-strict-aliasing
+CFLAGS = -std=c11 -Wall -Wextra -I$(VENDOR_DIR) -fno-strict-aliasing
 LDFLAGS =
 
 ifeq ($(BUILD), RELEASE)
