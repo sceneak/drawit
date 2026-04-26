@@ -11,8 +11,8 @@ LDFLAGS =
 RES_OBJ = 
 
 ifeq ($(BUILD), RELEASE)
-	CFLAGS += -O2 -flto
-	LDFLAGS += -s -flto
+	CFLAGS += -O2 -flto -fdata-sections -ffunction-sections
+	LDFLAGS += -s -flto -Wl,--gc-sections
 else
 	CFLAGS += -g3 -O0
 endif
