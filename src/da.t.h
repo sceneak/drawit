@@ -1,8 +1,10 @@
 #ifndef T
 	#define T void*
+	#error "T (Type) not defined"
 #endif
 #ifndef name
 	#define name da_unknown
+	#error "name not defined"
 #endif
 
 #ifndef DA_T_H
