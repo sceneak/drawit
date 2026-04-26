@@ -13,12 +13,13 @@
 #define CMD_HIST_MAX 256
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
-#define COLOR_FROM_HEX(hex) (color) {     \
+#define COLOR_INIT_HEX(hex) {     \
                .r = ((hex) >> 24) & 0xFF, \
                .g = ((hex) >> 16) & 0xFF, \
                .b = ((hex) >> 8) & 0xFF,  \
                .a = (hex) & 0xFF,         \
         }
+#define COLOR_FROM_HEX(hex) (color) COLOR_INIT_HEX(hex)
 
 typedef struct { float x, y; } vec2;
 typedef struct { float x, y, z; } vec3;
@@ -85,9 +86,9 @@ static float zoom_frac = 0.1f;
 static const color CLEAR_COLOR_DEFAULT = { 25, 25, 25, 25 };
 static color clear_color;
 
-static const color STROKE_COLOR_SCENE = COLOR_FROM_HEX(0xCCFF00FF);
-static const color STROKE_COLOR_HOTPINK = COLOR_FROM_HEX(0xFF69B4FF);
-static const color STROKE_COLOR_TURQUOISE = COLOR_FROM_HEX(0x40E0D0FF);
+static const color STROKE_COLOR_SCENE = COLOR_INIT_HEX(0xCCFF00FF);
+static const color STROKE_COLOR_HOTPINK = COLOR_INIT_HEX(0xFF69B4FF);
+static const color STROKE_COLOR_TURQUOISE = COLOR_INIT_HEX(0x40E0D0FF);
 static color stroke_color;
 static color stroke_color_primary;
 static color stroke_color_secondary;
