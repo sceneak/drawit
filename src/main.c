@@ -497,11 +497,18 @@ void init(void)
 	clear_color = CLEAR_COLOR_DEFAULT;
 	stroke_color_primary = STROKE_COLOR_SCENE;
 	stroke_color_secondary = STROKE_COLOR_HOTPINK;
+	stroke_color = stroke_color_primary;
+
 	screen_width = sapp_width();
 	screen_height = sapp_height();
 	gladLoaderLoadGL();
 	vg = nvgCreateGL3(NVG_ANTIALIAS | NVG_STENCIL_STROKES);
 	sapp_show_mouse(false);
+#ifdef _WIN32
+	#include <windows.h>
+	HWND hwnd = (HWND)sapp_win32_get_hwnd();
+	ShowWindow(hwnd, SW_MAXIMIZE);
+#endif
 }
 
 void cleanup(void)
@@ -715,7 +722,7 @@ void frame(void)
 		nvgBeginPath(vg);
 			nvgCircle(vg, mouse_world.x, mouse_world.y, STROKE_OPTS.size/1.5);
 		c = stroke_color;
-		nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/2));
+		nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/1.5));
 		nvgFill(vg);
 		
 	nvgEndFrame(vg);
