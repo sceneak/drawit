@@ -608,19 +608,14 @@ void event(const sapp_event *e)
 		mouse_world = screen_to_world(mouse_screen);
 
 		if (is_panning) {
-			/*
 			camera.x = pan_pivot_camera.x + (pan_pivot_mouse.x - mouse_screen.x)/zoom;
 			camera.y = pan_pivot_camera.y + (mouse_screen.y - pan_pivot_mouse.y)/zoom;
-			*/
-			camera.x -= e->mouse_dx/zoom;
-			camera.y += e->mouse_dy/zoom;
 		}
 		drawing_mouse_move(pt);
 		break;
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
 		if (e->mouse_button == SAPP_MOUSEBUTTON_MIDDLE) {
 			is_panning = true;
-			sapp_lock_mouse(true);
 			pan_pivot_mouse = mouse_screen;
 			pan_pivot_camera = camera;
 		}
@@ -633,10 +628,7 @@ void event(const sapp_event *e)
 		drawing_mouse_down(e, pt);
 		break;
 	case SAPP_EVENTTYPE_MOUSE_UP:
-		if (e->mouse_button == SAPP_MOUSEBUTTON_MIDDLE && is_panning) {
-			sapp_lock_mouse(false);
-			is_panning = false;
-		}
+		is_panning = is_panning && e->mouse_button != SAPP_MOUSEBUTTON_MIDDLE;
 		drawing_mouse_up();
 		break;
 	case SAPP_EVENTTYPE_MOUSE_SCROLL:
@@ -727,13 +719,12 @@ void frame(void)
 
 		draw_objects();
 
-		if (!sapp_mouse_locked()) {
-			nvgBeginPath(vg);
-				nvgCircle(vg, mouse_world.x, mouse_world.y, STROKE_OPTS.size/1.5);
-			c = stroke_color;
-			nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/1.5));
-			nvgFill(vg);
-		}
+		nvgBeginPath(vg);
+			nvgCircle(vg, mouse_world.x, mouse_world.y, STROKE_OPTS.size/1.5);
+		c = stroke_color;
+		nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/1.5));
+		nvgFill(vg);
+		
 	nvgEndFrame(vg);
 }
 
