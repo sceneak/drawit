@@ -707,6 +707,8 @@ void frame(void)
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
 	nvgBeginFrame(vg, screen_width/dpi, screen_height/dpi, dpi);
+
+	nvgSave(vg);
 	nvgTranslate(vg, screen_width/2, screen_height/2);
 	nvgScale(vg, zoom, -zoom);
 	nvgTranslate(vg, -camera.x, -camera.y);
@@ -718,13 +720,12 @@ void frame(void)
 		nvgFill(vg);
 
 		draw_objects();
-
+	nvgRestore(vg);
 		nvgBeginPath(vg);
-			nvgCircle(vg, mouse_world.x, mouse_world.y, STROKE_OPTS.size/1.5);
+			nvgCircle(vg, roundf(mouse_screen.x), round(mouse_screen.y), zoom*STROKE_OPTS.size/1.5);
 		c = stroke_color;
 		nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/1.5));
 		nvgFill(vg);
-		
 	nvgEndFrame(vg);
 }
 
