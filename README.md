@@ -1,3 +1,3 @@
 ## Drawit
-Minimal vector based paint program for illustrating concepts live.
-Trying this out with Sokol & NanoVG
+A very minimal vector based whiteboarding program for illustrating concepts live.
+I'm trying this out with Sokol & NanoVG.
