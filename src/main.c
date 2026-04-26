@@ -13,6 +13,7 @@
 #include <math.h>
 
 #define CMD_HIST_MAX 256
+#define STROKE_BOUNDS_MARGIN 5
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 #define COLOR_INIT_HEX(hex) {     \
@@ -39,8 +40,8 @@ struct stroke {
 	    input_count; /* is this appropriate? */
 	int vertex_idx,
 	    vertex_count; /* is this appropriate? */
-	color color;
 	rect bounds;
+	color color;
 };
 
 #define T struct stroke
@@ -145,11 +146,32 @@ static const pfh_stroke_opts STROKE_OPTS = {
 
 /************ HELPERS ************/
 
+static inline vec2 vec2_all(float s)
+{
+	return (vec2) { s, s };
+}
+
+static inline float vec2_dist2(vec2 from, vec2 to)
+{
+	vec2 dist = { to.x - from.x, to.y - from.y };
+	return dist.x * dist.x + dist.y * dist.y; 
+}
+
 static inline vec2 screen_to_world(vec2 screen)
 {
 	return (vec2){
 		.x = ( (screen.x - screen_width/2) / zoom) + camera.x,
 		.y = ( (screen_height/2 - screen.y) / zoom) + camera.y,
+	};
+}
+
+static inline rect rect_create(vec2 center, vec2 extents)
+{
+	return (rect){
+		.x0 = center.x - extents.x,
+		.y0 = center.y - extents.y,
+		.x1 = center.x + extents.x,
+		.y1 = center.y + extents.y,
 	};
 }
 
@@ -161,6 +183,22 @@ static inline rect rect_fit(rect r, vec2 v)
 		.x1 = fmaxf(r.x1, v.x),
 		.y1 = fmaxf(r.y1, v.y),
 	};
+}
+
+static inline rect rect_fit_rect(rect r1, rect r2)
+{
+	return (rect){
+		.x0 = fminf(r1.x0, r2.x0),
+		.y0 = fminf(r1.y0, r2.y0),
+		.x1 = fmaxf(r1.x1, r2.x1),
+		.y1 = fmaxf(r1.y1, r2.y1),
+	};
+}
+
+static inline bool rect_contains(rect r, vec2 v)
+{
+	return r.x0 < v.x && v.x < r.x1
+	    && r.y0 < v.y && v.y < r.y1;
 }
 
 /************ OBJ & STROKE ************/
@@ -222,10 +260,11 @@ void object_start_stroke(struct object *obj, color color)
 void object_append_point(struct object *obj, point pt)
 {
 	struct stroke *s = obj->stroke_da->elems + obj->stroke_da->count-1;
+	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
 	obj->input_da = da_point_append(obj->input_da, pt);
 	s->input_count++;
-	s->bounds = rect_fit(s->bounds, pt.coord);
+	s->bounds = rect_fit_rect(s->bounds, rect_create(pt.coord, PT_EXTENTS));
 
 	object_outline_last_stroke(obj);
 }
@@ -234,11 +273,12 @@ void object_append_points(struct object *obj, point pts[], int count)
 {
 	int i;
 	struct stroke *s = obj->stroke_da->elems + obj->stroke_da->count-1;
+	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
 	obj->input_da = da_point_append_n(obj->input_da, pts, count);
 	s->input_count += count;
 	for (i = 0; i < count; i++)
-		s->bounds = rect_fit(s->bounds, pts[i].coord);
+		s->bounds = rect_fit_rect(s->bounds, rect_create(pts[i].coord, PT_EXTENTS));
 
 	object_outline_last_stroke(obj);
 }
@@ -250,6 +290,41 @@ void object_delete_last_stroke(struct object *obj)
 	obj->input_da->count = last_stroke->input_idx;
 	obj->vertex_pfh_buf.count = last_stroke->vertex_idx;
 	obj->stroke_da->count--;
+}
+
+float object_stroke_dist(const struct object *obj, int stroke_idx, vec2 v)
+{
+	const struct stroke *s = obj->stroke_da->elems + stroke_idx;
+	const point *s_inputs = obj->input_da->elems + s->input_idx;
+	float closest_dist2 = FLT_MAX;
+	float dist2;
+	int i;
+
+	for (i = 0; i < s->input_count; i++) {
+		dist2 = vec2_dist2(v, s_inputs[i].coord);
+		if (dist2 < closest_dist2)
+			closest_dist2 = dist2;
+	}
+	return closest_dist2;
+}
+
+int object_closest_stroke_idx(const struct object *obj, vec2 v)
+{
+	size_t closest_stroke_idx = -1;
+	float closest_dist2 = FLT_MAX;
+	float dist2;
+	size_t i;
+
+	for (i = 0; i < obj->stroke_da->count; i++) {
+		if (!rect_contains(obj->stroke_da->elems[i].bounds, v))
+			continue;
+		dist2 = object_stroke_dist(obj, i, v);
+		if (dist2 >= closest_dist2)
+			continue;
+		closest_dist2 = dist2;
+		closest_stroke_idx = i;
+	}
+	return closest_stroke_idx;
 }
 
 /************ COMMAND ************/
@@ -366,7 +441,7 @@ void event(const sapp_event *e)
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
 	case SAPP_EVENTTYPE_MOUSE_UP:
 		pt = (point) { screen_to_world((vec2){ e->mouse_x, e->mouse_y }), -1 };
-		printf("raw (%f, %f), world (%f, %f)\n", e->mouse_x, e->mouse_y, pt.coord.x, pt.coord.y);
+		/* printf("raw (%f, %f), world (%f, %f)\n", e->mouse_x, e->mouse_y, pt.coord.x, pt.coord.y); */
 		break;
 	default: break;
 	}
@@ -518,24 +593,20 @@ void draw_object(struct object *obj)
 	nvgFill(vg);
 }
 
-void draw_object_stroke_bounds(struct object *obj)
-{ 
-	int i;
-
-	for (i = 0; i < obj->stroke_da->count; i++) {
-		draw_rect(obj->stroke_da->elems[i].bounds);
-	}
-}
-
 void draw_objects(void)
 {
 	bool draw_stroke_bounds = true;
+	int tmp;
 	size_t i;
 
 	for (i = 0; i < object_da->count; i++) {
 		draw_object(object_da->elems + i);
-		if (draw_stroke_bounds)
-			draw_object_stroke_bounds(object_da->elems + i);
+		if (draw_stroke_bounds) {
+			tmp = object_closest_stroke_idx(object_da->elems + i, mouse_world);
+			if (tmp == -1)
+				continue;
+			draw_rect(object_da->elems[i].stroke_da->elems[tmp].bounds);
+		}
 	}
 }
 
