@@ -10,6 +10,8 @@
 #define PFH_IMPLEMENTATION
 #include <perfect-freehand/pfh.h>
 
+#include <math.h>
+
 #define CMD_HIST_MAX 256
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
@@ -24,6 +26,7 @@
 typedef struct { float x, y; } vec2;
 typedef struct { float x, y, z; } vec3;
 typedef struct { unsigned char r, g, b, a; } color;
+typedef struct { float x0, y0, x1, y1; } rect;
 
 typedef struct { vec2 coord; float pressure; } point;
 
@@ -37,6 +40,7 @@ struct stroke {
 	int vertex_idx,
 	    vertex_count; /* is this appropriate? */
 	color color;
+	rect bounds;
 };
 
 #define T struct stroke
@@ -80,6 +84,13 @@ struct cmd_hist {
 #define T struct object
 #define name da_object
 #include "da.t.h"
+
+#define BOUNDS_INIT_DEFAULT {    \
+                .x0 = INFINITY, \
+                .y0 = INFINITY, \
+                .x1 = -INFINITY, \
+                .y1 = -INFINITY, \
+        }
 
 static float zoom_frac = 0.1f;
 
@@ -132,11 +143,23 @@ static const pfh_stroke_opts STROKE_OPTS = {
 	.last = false,
 };
 
+/************ HELPERS ************/
+
 static inline vec2 screen_to_world(vec2 screen)
 {
 	return (vec2){
 		.x = ( (screen.x - screen_width/2) / zoom) + camera.x,
 		.y = ( (screen_height/2 - screen.y) / zoom) + camera.y,
+	};
+}
+
+static inline rect rect_fit(rect r, vec2 v)
+{
+	return (rect){
+		.x0 = fminf(r.x0, v.x),
+		.y0 = fminf(r.y0, v.y),
+		.x1 = fmaxf(r.x1, v.x),
+		.y1 = fmaxf(r.y1, v.y),
 	};
 }
 
@@ -173,13 +196,13 @@ void object_begin(void)
 
 void object_outline_last_stroke(struct object *obj)
 {
-	struct stroke *last_stroke = obj->stroke_da->elems + obj->stroke_da->count-1;
+	struct stroke *last = obj->stroke_da->elems + obj->stroke_da->count-1;
 
-	obj->vertex_pfh_buf.count = last_stroke->vertex_idx;
+	obj->vertex_pfh_buf.count = last->vertex_idx;
 	pfh_get_stroke(
 		&obj->vertex_pfh_buf,
-		(pfh_point*)obj->input_da->elems + last_stroke->input_idx,
-		last_stroke->input_count,
+		(pfh_point*)obj->input_da->elems + last->input_idx,
+		last->input_count,
 		&STROKE_OPTS
 	);
 }
@@ -192,20 +215,31 @@ void object_start_stroke(struct object *obj, color color)
 		.vertex_idx = obj->vertex_pfh_buf.count, 
 		.vertex_count = 0,
 		.color = color,
+		.bounds = BOUNDS_INIT_DEFAULT,
 	});
 }
 
 void object_append_point(struct object *obj, point pt)
 {
+	struct stroke *s = obj->stroke_da->elems + obj->stroke_da->count-1;
+
 	obj->input_da = da_point_append(obj->input_da, pt);
-	obj->stroke_da->elems[obj->stroke_da->count-1].input_count++;
+	s->input_count++;
+	s->bounds = rect_fit(s->bounds, pt.coord);
+
 	object_outline_last_stroke(obj);
 }
 
-void object_append_points(struct object *obj, point points[], int count)
+void object_append_points(struct object *obj, point pts[], int count)
 {
-	obj->input_da = da_point_append_n(obj->input_da, points, count);
-	obj->stroke_da->elems[obj->stroke_da->count-1].input_count += count;
+	int i;
+	struct stroke *s = obj->stroke_da->elems + obj->stroke_da->count-1;
+
+	obj->input_da = da_point_append_n(obj->input_da, pts, count);
+	s->input_count += count;
+	for (i = 0; i < count; i++)
+		s->bounds = rect_fit(s->bounds, pts[i].coord);
+
 	object_outline_last_stroke(obj);
 }
 
@@ -332,6 +366,7 @@ void event(const sapp_event *e)
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
 	case SAPP_EVENTTYPE_MOUSE_UP:
 		pt = (point) { screen_to_world((vec2){ e->mouse_x, e->mouse_y }), -1 };
+		printf("raw (%f, %f), world (%f, %f)\n", e->mouse_x, e->mouse_y, pt.coord.x, pt.coord.y);
 		break;
 	default: break;
 	}
@@ -437,15 +472,26 @@ void event(const sapp_event *e)
 	}
 }
 
+void draw_rect(rect r)
+{
+	nvgBeginPath(vg);
+		nvgRect(vg, r.x0, r.y0, r.x1-r.x0, r.y1-r.y0);
+	nvgStrokeColor(vg, nvgRGBA(0, 255, 0, 255));
+	nvgStrokeWidth(vg, 2.0f);
+	nvgStroke(vg);
+}
+
 void draw_object(struct object *obj)
 {
 	int i, stroke_idx, 
-	    curr_stroke_vert_idx, next_stroke_vert_idx;
+	    curr_stroke_vert_idx, 
+	    next_stroke_vert_idx;
+	pfh_vec2 p0, p1;
 	color c;
 
 	stroke_idx = curr_stroke_vert_idx = next_stroke_vert_idx = 0;
 	for (i = 0; i < obj->vertex_pfh_buf.count; i++) {
-		const pfh_vec2 p0 = obj->vertex_pfh_buf.elems[i];
+		p0 = obj->vertex_pfh_buf.elems[i];
 
 		if (i == next_stroke_vert_idx) {
 			c = obj->stroke_da->elems[stroke_idx].color;
@@ -455,7 +501,7 @@ void draw_object(struct object *obj)
 			nvgBeginPath(vg);
 			nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
 
-			nvgMoveTo(vg, p0.x, -p0.y);
+			nvgMoveTo(vg, p0.x, p0.y);
 			stroke_idx++;
 			curr_stroke_vert_idx = next_stroke_vert_idx;
 			next_stroke_vert_idx = stroke_idx < obj->stroke_da->count 
@@ -463,21 +509,34 @@ void draw_object(struct object *obj)
 				: obj->vertex_pfh_buf.count;
 		}
 
-		const pfh_vec2 p1 = (i+1) == next_stroke_vert_idx
+		p1 = (i+1) == next_stroke_vert_idx
 			? obj->vertex_pfh_buf.elems[curr_stroke_vert_idx] /* last one needs to wrap back to start. */
 			: obj->vertex_pfh_buf.elems[i + 1];
 
-		nvgQuadTo(vg, p0.x, -p0.y, (p0.x + p1.x) / 2, -(p0.y + p1.y) / 2);
+		nvgQuadTo(vg, p0.x, p0.y, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
 	}
 	nvgFill(vg);
 }
 
-void draw_objects(void)
-{
+void draw_object_stroke_bounds(struct object *obj)
+{ 
 	int i;
 
-	for (i = 0; i < object_da->count; i++)
+	for (i = 0; i < obj->stroke_da->count; i++) {
+		draw_rect(obj->stroke_da->elems[i].bounds);
+	}
+}
+
+void draw_objects(void)
+{
+	bool draw_stroke_bounds = true;
+	size_t i;
+
+	for (i = 0; i < object_da->count; i++) {
 		draw_object(object_da->elems + i);
+		if (draw_stroke_bounds)
+			draw_object_stroke_bounds(object_da->elems + i);
+	}
 }
 
 void frame(void) 
@@ -491,8 +550,8 @@ void frame(void)
 
 	nvgBeginFrame(vg, screen_width/dpi, screen_height/dpi, dpi);
 	nvgTranslate(vg, screen_width/2, screen_height/2);
-	nvgScale(vg, zoom, zoom);
-	nvgTranslate(vg, -camera.x, camera.y);
+	nvgScale(vg, zoom, -zoom);
+	nvgTranslate(vg, -camera.x, -camera.y);
 
 		nvgBeginPath(vg);
 			nvgRect(vg, -25, -25, 50, 50);
@@ -503,7 +562,7 @@ void frame(void)
 		draw_objects();
 
 		nvgBeginPath(vg);
-			nvgCircle(vg, mouse_world.x, -mouse_world.y, STROKE_OPTS.size/1.5);
+			nvgCircle(vg, mouse_world.x, mouse_world.y, STROKE_OPTS.size/1.5);
 		c = stroke_color;
 		nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/2));
 		nvgFill(vg);
@@ -512,6 +571,9 @@ void frame(void)
 }
 
 sapp_desc sokol_main(int argc, char* argv[]) {
+	(void)argc;
+	(void)argv;
+
 	return (sapp_desc){
 		.init_cb      = init,
 		.frame_cb     = frame,
