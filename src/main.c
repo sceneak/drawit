@@ -16,11 +16,11 @@
 #define STROKE_BOUNDS_MARGIN 5
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
-#define COLOR_INIT_HEX(hex) {     \
+#define COLOR_INIT_HEX(hex) {             \
                .r = ((hex) >> 24) & 0xFF, \
                .g = ((hex) >> 16) & 0xFF, \
                .b = ((hex) >> 8) & 0xFF,  \
-               .a = (hex) & 0xFF,         \
+               .a =  (hex) & 0xFF,        \
         }
 #define COLOR_FROM_HEX(hex) (color) COLOR_INIT_HEX(hex)
 
@@ -42,6 +42,7 @@ struct stroke {
 	    vertex_count; /* is this appropriate? */
 	rect bounds;
 	color color;
+	bool deleted;
 };
 
 #define T struct stroke
@@ -64,6 +65,8 @@ struct cmd {
 	enum cmd_type type;
 	union {
 		struct {
+			struct object *obj;
+			int idx;
 			struct da_point *point_da; 
 			color color;
 		} stroke_data;
@@ -87,8 +90,8 @@ struct cmd_hist {
 #include "da.t.h"
 
 #define BOUNDS_INIT_DEFAULT {    \
-                .x0 = INFINITY, \
-                .y0 = INFINITY, \
+                .x0 = INFINITY,  \
+                .y0 = INFINITY,  \
                 .x1 = -INFINITY, \
                 .y1 = -INFINITY, \
         }
@@ -116,8 +119,10 @@ static bool is_panning = false;
 static vec2 pan_pivot_mouse;
 static vec2 pan_pivot_camera;
 
+static bool draw_closest_stroke_bounds = false;
 static bool is_drawing_obj = false;
 static bool is_drawing_stroke = false;
+static bool is_deleting_stroke = false;
 static struct da_object *object_da;
 
 static struct cmd cmd_curr;
@@ -148,7 +153,7 @@ static const pfh_stroke_opts STROKE_OPTS = {
 
 static inline vec2 vec2_all(float s)
 {
-	return (vec2) { s, s };
+	return (vec2){s, s};
 }
 
 static inline float vec2_dist2(vec2 from, vec2 to)
@@ -223,10 +228,9 @@ void object_print(const struct object *obj)
 
 void object_begin(void)
 {
-	is_drawing_obj = true;
 	struct object obj = {
-		.stroke_da  = da_stroke_create(DA_INITIAL_CAPACITY),
-		.input_da  = da_point_create(DA_INITIAL_CAPACITY),
+		.stroke_da = da_stroke_create(DA_INITIAL_CAPACITY),
+		.input_da = da_point_create(DA_INITIAL_CAPACITY),
 	};
 	pfh_vec2_buf_init(&obj.vertex_pfh_buf, DA_INITIAL_CAPACITY);
 	object_da = da_object_append(object_da, obj);
@@ -243,6 +247,7 @@ void object_outline_last_stroke(struct object *obj)
 		last->input_count,
 		&STROKE_OPTS
 	);
+	last->vertex_count = obj->vertex_pfh_buf.count - last->vertex_idx;
 }
 
 void object_start_stroke(struct object *obj, color color)
@@ -254,6 +259,7 @@ void object_start_stroke(struct object *obj, color color)
 		.vertex_count = 0,
 		.color = color,
 		.bounds = BOUNDS_INIT_DEFAULT,
+		.deleted = false,
 	});
 }
 
@@ -281,6 +287,11 @@ void object_append_points(struct object *obj, point pts[], int count)
 		s->bounds = rect_fit_rect(s->bounds, rect_create(pts[i].coord, PT_EXTENTS));
 
 	object_outline_last_stroke(obj);
+}
+
+void object_mark_stroke_deleted(struct object *obj, int stroke_idx, bool deleted)
+{
+	obj->stroke_da->elems[stroke_idx].deleted = deleted;
 }
 
 void object_delete_last_stroke(struct object *obj)
@@ -333,6 +344,7 @@ static void cmd_hist_forget(struct cmd *cmd)
 {
 	switch(cmd->type) {
 	case CMD_STROKE_DELETE:
+		break;
 	case CMD_STROKE_CREATE:
 		free(cmd->v.stroke_data.point_da);
 		break;
@@ -377,7 +389,11 @@ static void cmd_hist_undo(void)
 
 	switch(cmd.type) {
 	case CMD_STROKE_DELETE:
-		cmd_stroke_create(cmd);
+		object_mark_stroke_deleted(
+			cmd.v.stroke_data.obj,
+			cmd.v.stroke_data.idx,
+			false
+		);
 		break;
 	case CMD_STROKE_CREATE:
 		object_delete_last_stroke(object_da->elems + object_da->count-1);
@@ -400,12 +416,66 @@ static void cmd_hist_redo(void)
 
 	switch(cmd.type) {
 	case CMD_STROKE_DELETE:
-		object_delete_last_stroke(object_da->elems + object_da->count-1);
+		object_mark_stroke_deleted(
+			cmd.v.stroke_data.obj,
+			cmd.v.stroke_data.idx,
+			true
+		);
 		break;
 	case CMD_STROKE_CREATE:
 		cmd_stroke_create(cmd);
 		break;
 	default: break;
+	}
+}
+
+/************ DRAWING ************/
+
+void drawing_mouse_down(const sapp_event *e, point pt)
+{
+	struct object *last_obj;
+
+	if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT || e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+		if (!is_drawing_obj) {
+			/* cmd_hist_record((struct cmd){CMD_OBJECT_BEGIN}); */
+			object_begin();
+			is_drawing_obj = true;
+		}
+		last_obj = object_da->elems + object_da->count-1;
+
+		object_start_stroke(object_da->elems + object_da->count-1, stroke_color);
+		is_drawing_stroke = true;
+
+		if (cmd_curr.type != CMD_NONE)
+			puts("Warning: something ain't right. cmd_curr is not NONE.");
+		cmd_curr.type = CMD_STROKE_CREATE;
+		cmd_curr.v.stroke_data.point_da = da_point_create(DA_INITIAL_CAPACITY);
+		cmd_curr.v.stroke_data.color = stroke_color;
+		cmd_curr.v.stroke_data.obj = last_obj;
+		cmd_curr.v.stroke_data.idx = last_obj->stroke_da->count-1;
+
+		object_append_point(object_da->elems + object_da->count-1, pt);
+		cmd_curr.v.stroke_data.point_da = da_point_append(cmd_curr.v.stroke_data.point_da, pt);
+	}
+}
+
+void drawing_mouse_move(point pt)
+{
+	struct object *last_obj = object_da->elems + object_da->count-1;
+	if (is_drawing_stroke) {
+		if (cmd_curr.type != CMD_STROKE_CREATE)
+			puts("Warning: something ain't right. cmd_curr is not STROKE_CREATE.");
+		object_append_point(last_obj, pt);
+		cmd_curr.v.stroke_data.point_da = da_point_append(cmd_curr.v.stroke_data.point_da, pt);
+	}
+}
+
+void drawing_mouse_up()
+{
+	if (is_drawing_stroke) {
+		is_drawing_stroke = false;
+		cmd_hist_record(cmd_curr);
+		cmd_curr.type = CMD_NONE;
 	}
 }
 
@@ -434,6 +504,7 @@ void event(const sapp_event *e)
 {
 	static bool ctrl_held = false;
 	static bool alt_held = false;
+	struct object *last_obj = object_da->elems + object_da->count-1;
 	point pt;
 
 	switch(e->type) {
@@ -458,7 +529,12 @@ void event(const sapp_event *e)
 			alt_held = (e->key_code == SAPP_KEYCODE_LEFT_ALT || e-> key_code == SAPP_KEYCODE_RIGHT_ALT);
 
 		if (e->key_code == SAPP_KEYCODE_P)
-			object_print(object_da->elems + object_da->count-1);
+			object_print(last_obj);
+
+		if (e->key_code == SAPP_KEYCODE_X) {
+			is_deleting_stroke = true;
+			draw_closest_stroke_bounds = true;
+		}
 
 		if (e->key_code == SAPP_KEYCODE_A && is_drawing_obj) {
 			/* TODO: rethink this later */
@@ -484,6 +560,29 @@ void event(const sapp_event *e)
 			ctrl_held = !(e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
 		if (!alt_held)
 			alt_held = (e->key_code == SAPP_KEYCODE_LEFT_ALT || e-> key_code == SAPP_KEYCODE_RIGHT_ALT);
+		if (e->key_code == SAPP_KEYCODE_X) {
+			is_deleting_stroke = false;
+			draw_closest_stroke_bounds = false;
+			drawing_mouse_up(); /* no weird shenanigans mid draw */
+
+			if (cmd_curr.type != CMD_NONE)
+				puts("Warning: Something ain't right. cmd_curr is not NONE.");
+			cmd_curr.type = CMD_STROKE_DELETE;
+			cmd_curr.v.stroke_data.obj = last_obj;
+			cmd_curr.v.stroke_data.idx = object_closest_stroke_idx(last_obj, mouse_world);
+			if (cmd_curr.v.stroke_data.idx < 0) {
+				cmd_curr.type = CMD_NONE;
+				break;
+			}
+			object_mark_stroke_deleted(
+				last_obj, 
+				cmd_curr.v.stroke_data.idx,
+				true
+			);
+			cmd_hist_record(cmd_curr);
+			printf("Deleted stroke idx %d\n", cmd_curr.v.stroke_data.idx);
+		}
+
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		mouse_screen.x = e->mouse_x;
@@ -494,10 +593,7 @@ void event(const sapp_event *e)
 			camera.x = pan_pivot_camera.x + (pan_pivot_mouse.x - mouse_screen.x)/zoom;
 			camera.y = pan_pivot_camera.y + (mouse_screen.y - pan_pivot_mouse.y)/zoom;
 		}
-		if (is_drawing_stroke) {
-			object_append_point(object_da->elems + object_da->count-1, pt);
-			cmd_curr.v.stroke_data.point_da = da_point_append(cmd_curr.v.stroke_data.point_da, pt);
-		}
+		drawing_mouse_move(pt);
 		break;
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
 		if (e->mouse_button == SAPP_MOUSEBUTTON_MIDDLE) {
@@ -511,29 +607,11 @@ void event(const sapp_event *e)
 		else if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT)
 			stroke_color = stroke_color_secondary;
 
-		if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT || e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
-			if (!is_drawing_obj) {
-				/* cmd_hist_record((struct cmd){CMD_OBJECT_BEGIN}); */
-				object_begin();
-			}
-
-			object_start_stroke(object_da->elems + object_da->count-1, stroke_color);
-			is_drawing_stroke = true;
-
-			cmd_curr.type = CMD_STROKE_CREATE;
-			cmd_curr.v.stroke_data.point_da = da_point_create(DA_INITIAL_CAPACITY);
-			cmd_curr.v.stroke_data.color = stroke_color;
-
-			object_append_point( object_da->elems + object_da->count-1, pt);
-			cmd_curr.v.stroke_data.point_da = da_point_append(cmd_curr.v.stroke_data.point_da, pt);
-		}
+		drawing_mouse_down(e, pt);
 		break;
 	case SAPP_EVENTTYPE_MOUSE_UP:
 		is_panning = is_panning && e->mouse_button != SAPP_MOUSEBUTTON_MIDDLE;
-		if (is_drawing_stroke) {
-			is_drawing_stroke = false;
-			cmd_hist_record(cmd_curr);
-		}
+		drawing_mouse_up();
 		break;
 	case SAPP_EVENTTYPE_MOUSE_SCROLL:
 		float ratio = (1 + zoom_frac * e->scroll_y);
@@ -558,50 +636,41 @@ void draw_rect(rect r)
 
 void draw_object(struct object *obj)
 {
-	int i, stroke_idx, 
-	    curr_stroke_vert_idx, 
-	    next_stroke_vert_idx;
+	int i, j;
+	struct stroke *s;
+	pfh_vec2 *s_vertices;
 	pfh_vec2 p0, p1;
-	color c;
 
-	stroke_idx = curr_stroke_vert_idx = next_stroke_vert_idx = 0;
-	for (i = 0; i < obj->vertex_pfh_buf.count; i++) {
-		p0 = obj->vertex_pfh_buf.elems[i];
+	for (i = 0; i < obj->stroke_da->count; i++) {
+		s = obj->stroke_da->elems + i;
+		if (s->deleted)
+			continue;
 
-		if (i == next_stroke_vert_idx) {
-			c = obj->stroke_da->elems[stroke_idx].color;
+		s_vertices = obj->vertex_pfh_buf.elems + s->vertex_idx;
 
-			if (i > 0)
-				nvgFill(vg);
-			nvgBeginPath(vg);
-			nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
+		nvgBeginPath(vg);
+		nvgFillColor(vg, nvgRGBA(s->color.r, s->color.g, s->color.b, s->color.a));
+		nvgMoveTo(vg, s_vertices[0].x, s_vertices[0].y);
 
-			nvgMoveTo(vg, p0.x, p0.y);
-			stroke_idx++;
-			curr_stroke_vert_idx = next_stroke_vert_idx;
-			next_stroke_vert_idx = stroke_idx < obj->stroke_da->count 
-				? obj->stroke_da->elems[stroke_idx].vertex_idx
-				: obj->vertex_pfh_buf.count;
+		for (j = 0; j < s->vertex_count; j++) {
+			p0 = s_vertices[j];
+			p1 = (j+1) == s->vertex_count
+				? s_vertices[0]
+				: s_vertices[j + 1];
+			nvgQuadTo(vg, p0.x, p0.y, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
 		}
-
-		p1 = (i+1) == next_stroke_vert_idx
-			? obj->vertex_pfh_buf.elems[curr_stroke_vert_idx] /* last one needs to wrap back to start. */
-			: obj->vertex_pfh_buf.elems[i + 1];
-
-		nvgQuadTo(vg, p0.x, p0.y, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
+		nvgFill(vg);
 	}
-	nvgFill(vg);
 }
 
 void draw_objects(void)
 {
-	bool draw_stroke_bounds = true;
 	int tmp;
 	size_t i;
 
 	for (i = 0; i < object_da->count; i++) {
 		draw_object(object_da->elems + i);
-		if (draw_stroke_bounds) {
+		if (draw_closest_stroke_bounds) {
 			tmp = object_closest_stroke_idx(object_da->elems + i, mouse_world);
 			if (tmp == -1)
 				continue;
@@ -654,4 +723,3 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 		
 	};
 }
-
