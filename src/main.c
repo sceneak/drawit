@@ -501,6 +501,7 @@ void init(void)
 	screen_height = sapp_height();
 	gladLoaderLoadGL();
 	vg = nvgCreateGL3(NVG_ANTIALIAS | NVG_STENCIL_STROKES);
+	sapp_show_mouse(false);
 }
 
 void cleanup(void)
@@ -563,6 +564,7 @@ void event(const sapp_event *e)
 			*(alt_held ? &stroke_color_secondary : &stroke_color_primary) = STROKE_COLOR_HOTPINK;
 		else if (e->key_code == SAPP_KEYCODE_3)
 			*(alt_held ? &stroke_color_secondary : &stroke_color_primary) = STROKE_COLOR_TURQUOISE;
+		stroke_color = stroke_color_primary;
 		break;
 	case SAPP_EVENTTYPE_KEY_UP:
 		if (ctrl_held)
