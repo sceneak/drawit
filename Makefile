@@ -8,6 +8,8 @@ BUILD ?= DEBUG
 CFLAGS = -std=c11 -Wall -Wextra -I$(VENDOR_DIR) -fno-strict-aliasing
 LDFLAGS =
 
+RES_OBJ = 
+
 ifeq ($(BUILD), RELEASE)
 	CFLAGS += -O2 -flto
 	LDFLAGS += -s -flto
@@ -22,6 +24,7 @@ ifeq ($(OS), Windows_NT)
 	RM = rmdir /s /q
 	# Black magic from gemini
 	MD = if not exist "$(subst /,\,$(@D))" mkdir "$(subst /,\,$(@D))"
+	RES_OBJ = ./build/resources.res.o
 
 	ifeq ($(BUILD), RELEASE)
 		LDFLAGS += -mwindows
@@ -41,14 +44,17 @@ SRCS = $(wildcard $(SRC_DIR)/*.c) \
        $(wildcard $(VENDOR_DIR)/nanovg/*.c) \
        $(wildcard $(VENDOR_DIR)/sokol/*.c)
        
-OBJS := $(SRCS:%.c=$(BUILD_DIR)/%.o)
+OBJS := $(SRCS:%.c=$(BUILD_DIR)/%.o) $(RES_OBJ)
 
 .PHONY: all clean
 
 all: $(TARGET_BIN)
 
-$(TARGET_BIN): $(OBJS)
+$(TARGET_BIN): $(OBJS) 
 	$(CC) $(OBJS) -o $@ $(LDFLAGS) $(LIBS)
+
+$(RES_OBJ): ./resources.rc
+	windres ./resources.rc -O coff -o $(RES_OBJ) 
 
 $(BUILD_DIR)/%.o: %.c 
 	$(MD)

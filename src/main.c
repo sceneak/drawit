@@ -11,6 +11,7 @@
 #include <perfect-freehand/pfh.h>
 
 #include <math.h>
+#include <stdint.h>
 
 #define CMD_HIST_MAX 256
 #define STROKE_BOUNDS_MARGIN 5
@@ -95,6 +96,14 @@ struct cmd_hist {
                 .x1 = -INFINITY, \
                 .y1 = -INFINITY, \
         }
+
+static const uint8_t APP_ICON_32x32[] = {
+#ifndef __INTELLISENSE__ /* stupid lsp won't include properly */
+#include "gen/icon32x32.inc"
+#else
+0
+#endif
+};
 
 static float zoom_frac = 0.1f;
 
@@ -714,12 +723,20 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 	(void)argc;
 	(void)argv;
 
+	printf("icon bytes: %llu\n", sizeof(APP_ICON_32x32));
 	return (sapp_desc){
 		.init_cb      = init,
 		.frame_cb     = frame,
 		.event_cb     = event,
 		.cleanup_cb   = cleanup,
 		.window_title = "Drawit",
-		
+		.icon         = {
+			.sokol_default = false,
+			.images = {{
+				.width  = 32,
+				.height = 32,
+				.pixels = SAPP_RANGE(APP_ICON_32x32),
+			}}
+		},
 	};
 }
