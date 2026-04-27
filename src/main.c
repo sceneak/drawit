@@ -721,13 +721,6 @@ void frame(void)
 	nvgTranslate(vg, screen_width/2, screen_height/2);
 	nvgScale(vg, zoom, -zoom);
 	nvgTranslate(vg, -camera.x, -camera.y);
-
-		nvgBeginPath(vg);
-			nvgRect(vg, -25, -25, 50, 50);
-		c = STROKE_COLOR_SCENE;
-		nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
-		nvgFill(vg);
-
 		draw_objects();
 	nvgRestore(vg);
 		if (mouse_in_frame) {
