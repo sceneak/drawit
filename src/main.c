@@ -121,6 +121,7 @@ static int screen_width, screen_height;
 static NVGcontext *vg;
 static vec2 mouse_screen;
 static vec2 mouse_world;
+static bool mouse_in_frame = true;
 static vec2 camera = {0, 0};
 static float zoom = 1.0f;
 
@@ -527,6 +528,12 @@ void event(const sapp_event *e)
 	point pt;
 
 	switch(e->type) {
+	case SAPP_EVENTTYPE_MOUSE_ENTER:
+		mouse_in_frame = true;
+		break;
+	case SAPP_EVENTTYPE_MOUSE_LEAVE:
+		mouse_in_frame = false;
+		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
 	case SAPP_EVENTTYPE_MOUSE_UP:
@@ -723,11 +730,13 @@ void frame(void)
 
 		draw_objects();
 	nvgRestore(vg);
-		nvgBeginPath(vg);
-			nvgCircle(vg, roundf(mouse_screen.x), round(mouse_screen.y), zoom*STROKE_OPTS.size/1.5);
-		c = stroke_color;
-		nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/1.5));
-		nvgFill(vg);
+		if (mouse_in_frame) {
+			nvgBeginPath(vg);
+				nvgCircle(vg, roundf(mouse_screen.x), round(mouse_screen.y), zoom*STROKE_OPTS.size/1.5);
+			c = stroke_color;
+			nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/1.5));
+			nvgFill(vg);
+		}
 	nvgEndFrame(vg);
 }
 
