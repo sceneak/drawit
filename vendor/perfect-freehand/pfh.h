@@ -215,16 +215,27 @@ void pfh_get_stroke(pfh_vec2_buf *dest, const pfh_point pts[], size_t pts_count,
  */
 void pfh_get_stroke_points(pfh_stroke_point_buf *dest, const pfh_point pts[], size_t pts_count, const pfh_stroke_opts *opts)
 {
+	pfh_point pts_local[2];
+	const pfh_point *pts_to_process = pts;
+	size_t pts_to_process_count = pts_count;
+
 	if (pts_count == 0)
 		return;
 
 	const float t = PFH_MIN_STREAMLINE_T + (1 - opts->streamline) * PFH_STREAMLINE_T_RANGE;
-
-	/*
-	 * In the original, this was a part that fixes weirdness with tapering 
-	 * start & end when there's only two points by interpolates new ones.
-	 * I'm not adding it since it requires duplicating pts
-	 */
+	
+	if (pts_count == 1) {
+		/* Synthesize a second one  using pfh_local
+		* at UNIT_OFFSET to ensure valid vector 
+		* for the first point. */
+		pts_local[0] = pts[0];
+		pts_local[1] = (pfh_point){
+			pfh_vec2_add(pts[0].coord, UNIT_OFFSET),
+			pts[0].pressure >= 0 ? pts[0].pressure : PFH_DEFAULT_PRESSURE
+		};
+		pts = pts_local;
+		pts_count = 2;
+	}
 
 	pfh_buf_push(dest, ((pfh_stroke_point){
 		.point = { 
