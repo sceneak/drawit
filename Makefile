@@ -32,6 +32,7 @@ ifeq ($(OS), Windows_NT)
 else
 	LIBS += -lGL -lm -lpthread -ldl -lrt -lX11 -lXi -lXcursor
 	RM = rm -r
+	CFLAGS += -D_POSIX_C_SOURCE=199309L # for clock_gettime that's posix
 	ifeq ($(BUILD), DEBUG)
 		CFLAGS += -fsanitize=address,undefined
 		LDFLAGS += -fsanitize=address,undefined -ftrack-macro-expansion
