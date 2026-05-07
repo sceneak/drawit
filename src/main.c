@@ -65,7 +65,7 @@ enum cmd_type {
 struct cmd {
 	enum cmd_type type;
 	union {
-		struct {
+		struct cmd_stroke_data {
 			struct object *obj;
 			int idx;
 			struct da_point *point_da; 
@@ -449,13 +449,12 @@ void drawing_mouse_down(const sapp_event *e, point pt)
 
 	if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT || e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
 		if (!is_drawing_obj) {
-			/* cmd_hist_record((struct cmd){CMD_OBJECT_BEGIN}); */
 			object_begin();
 			is_drawing_obj = true;
 		}
-		last_obj = object_da->elems + object_da->count-1;
+		last_obj = object_da->elems + object_da->count-1; /* remember, needs to go after object_begin() */
 
-		object_start_stroke(object_da->elems + object_da->count-1, stroke_color);
+		object_start_stroke(last_obj, stroke_color);
 		is_drawing_stroke = true;
 
 		if (cmd_curr.type != CMD_NONE)
@@ -466,7 +465,7 @@ void drawing_mouse_down(const sapp_event *e, point pt)
 		cmd_curr.v.stroke_data.obj = last_obj;
 		cmd_curr.v.stroke_data.idx = last_obj->stroke_da->count-1;
 
-		object_append_point(object_da->elems + object_da->count-1, pt);
+		object_append_point(last_obj, pt);
 		cmd_curr.v.stroke_data.point_da = da_point_append(cmd_curr.v.stroke_data.point_da, pt);
 	}
 }
