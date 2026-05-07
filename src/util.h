@@ -15,4 +15,6 @@
 #define _CAT(a, b) a##b
 #define CAT(a, b) _CAT(a, b)
 
+#define min(a, b) ( (a) < (b) ? (a) : (b) )
+
 #endif

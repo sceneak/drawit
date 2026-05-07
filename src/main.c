@@ -2,6 +2,7 @@
 #include <glad2/gl.h>
 
 #include <sokol/sokol_app.h>
+#include <sokol/sokol_time.h>
 
 #define NANOVG_GL3_IMPLEMENTATION
 #include <nanovg/nanovg.h>
@@ -15,6 +16,7 @@
 
 #define CMD_HIST_MAX 256
 #define STROKE_BOUNDS_MARGIN 5
+#define MAX_SPEED_INCH 1200 /* will mult. by dpi_scale */
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 #define COLOR_INIT_HEX(hex) {             \
@@ -117,6 +119,7 @@ static color stroke_color;
 static color stroke_color_primary;
 static color stroke_color_secondary;
 
+static float dpi_scale; /* needs to be cached due to sokol wackyness */
 static int screen_width, screen_height;
 static NVGcontext *vg;
 static vec2 mouse_screen;
@@ -140,11 +143,11 @@ static struct cmd_hist cmd_hist;
 
 static const pfh_stroke_opts STROKE_OPTS = {
 	.size = 16,
-	.thinning = .5,
-	.streamline = .5,
-	.smoothing = .5,
+	.thinning = .7,
+	.streamline = .7,
+	.smoothing = .2,
 	.easing = NULL,
-	.simulate_pressure = true,
+	.simulate_pressure = false,
 	.is_complete = false,
 	.start = {
 		.cap = true,
@@ -472,7 +475,7 @@ void drawing_mouse_down(const sapp_event *e, point pt)
 
 void drawing_mouse_move(point pt)
 {
-	const float MIN_PX = 1.0f;
+	const int MIN_PX = 4;
 	static point last_pt = { .coord = { FLT_MAX, FLT_MAX } };
 	struct object *last_obj = object_da->elems + object_da->count-1;
 
@@ -501,6 +504,8 @@ void drawing_mouse_up()
 
 void init(void) 
 {
+	stm_setup();
+
 	object_da = da_object_create(DA_INITIAL_CAPACITY);
 
 	clear_color = CLEAR_COLOR_DEFAULT;
@@ -530,8 +535,13 @@ void event(const sapp_event *e)
 {
 	static bool ctrl_held = false;
 	static bool alt_held = false;
+	
+	static point last_pt = { .coord = { FLT_MAX, FLT_MAX }, .pressure = .5 };
+	static uint64_t last_move = 0;
+
 	struct object *last_obj = object_da->elems + object_da->count-1;
 	point pt;
+	double delta, vel;
 
 	switch(e->type) {
 	case SAPP_EVENTTYPE_MOUSE_ENTER:
@@ -543,8 +553,15 @@ void event(const sapp_event *e)
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
 	case SAPP_EVENTTYPE_MOUSE_UP:
-		pt = (point) { screen_to_world((vec2){ e->mouse_x, e->mouse_y }), -1 };
-		/* printf("raw (%f, %f), world (%f, %f)\n", e->mouse_x, e->mouse_y, pt.coord.x, pt.coord.y); */
+		delta = stm_sec(stm_laptime(&last_move));
+		pt.coord = screen_to_world( (vec2){ e->mouse_x, e->mouse_y } );
+
+		vel = ( sqrtf(vec2_dist2(pt.coord, last_pt.coord)) / delta );
+		pt.pressure = 1 - min(vel / (MAX_SPEED_INCH*dpi_scale), 1);
+		pt.pressure = last_pt.pressure * .75 + pt.pressure * .25; /* blend */
+
+		/* printf("raw (%f, %f), world (%f, %f), pressure (%f) \n", e->mouse_x, e->mouse_y, pt.coord.x, pt.coord.y, pt.pressure); */
+		last_pt = pt;
 		break;
 	default: break;
 	}
@@ -719,14 +736,15 @@ void draw_objects(void)
 
 void frame(void) 
 {
-	float dpi = sapp_dpi_scale();
 	color c;
+
+	dpi_scale = sapp_dpi_scale();
 
 	glViewport(0, 0, screen_width, screen_height);
 	glClearColor(clear_color.r/255.0f, clear_color.g/255.0f, clear_color.b/255.0f, clear_color.a/255.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
-	nvgBeginFrame(vg, screen_width/dpi, screen_height/dpi, dpi);
+	nvgBeginFrame(vg, screen_width/dpi_scale, screen_height/dpi_scale, dpi_scale);
 
 	nvgSave(vg);
 	nvgTranslate(vg, screen_width/2, screen_height/2);
