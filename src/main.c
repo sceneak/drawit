@@ -139,7 +139,7 @@ static struct cmd cmd_curr;
 static struct cmd_hist cmd_hist;
 
 static const pfh_stroke_opts STROKE_OPTS = {
-	.size = 12,
+	.size = 16,
 	.thinning = .5,
 	.streamline = .5,
 	.smoothing = .5,
@@ -472,8 +472,15 @@ void drawing_mouse_down(const sapp_event *e, point pt)
 
 void drawing_mouse_move(point pt)
 {
+	const float MIN_PX = 1.0f;
+	static point last_pt = { .coord = { FLT_MAX, FLT_MAX } };
 	struct object *last_obj = object_da->elems + object_da->count-1;
+
 	if (is_drawing_stroke) {
+		if (vec2_dist2(pt.coord, last_pt.coord) < MIN_PX*MIN_PX)
+			return;
+		last_pt = pt;
+
 		if (cmd_curr.type != CMD_STROKE_CREATE)
 			puts("Warning: something ain't right. cmd_curr is not STROKE_CREATE.");
 		object_append_point(last_obj, pt);
@@ -671,12 +678,17 @@ void draw_object(struct object *obj)
 		s = obj->stroke_da->elems + i;
 		if (s->deleted)
 			continue;
+		if (s->vertex_count < 3) /* shouldn't happen, a dot is 13 segs */
+			continue;
 
 		s_vertices = obj->vertex_pfh_buf.elems + s->vertex_idx;
 
 		nvgBeginPath(vg);
 		nvgFillColor(vg, nvgRGBA(s->color.r, s->color.g, s->color.b, s->color.a));
-		nvgMoveTo(vg, s_vertices[0].x, s_vertices[0].y);
+
+		p0 = s_vertices[s->vertex_count-1];
+		p1 = s_vertices[0];
+		nvgMoveTo(vg, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
 
 		for (j = 0; j < s->vertex_count; j++) {
 			p0 = s_vertices[j];
