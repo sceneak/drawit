@@ -143,9 +143,9 @@ static struct cmd_hist cmd_hist;
 
 static const pfh_stroke_opts STROKE_OPTS = {
 	.size = 16,
-	.thinning = .7,
-	.streamline = .7,
-	.smoothing = .2,
+	.thinning = .55,
+	.streamline = .45,
+	.smoothing = .55,
 	.easing = NULL,
 	.simulate_pressure = false,
 	.is_complete = false,
@@ -475,7 +475,7 @@ void drawing_mouse_down(const sapp_event *e, point pt)
 
 void drawing_mouse_move(point pt)
 {
-	const int MIN_PX = 4;
+	const int MIN_PX = 2;
 	static point last_pt = { .coord = { FLT_MAX, FLT_MAX } };
 	struct object *last_obj = object_da->elems + object_da->count-1;
 
