@@ -115,7 +115,7 @@ static color clear_color;
 static const color STROKE_COLOR_SCENE = COLOR_INIT_HEX(0xCCFF00FF);
 static const color STROKE_COLOR_HOTPINK = COLOR_INIT_HEX(0xFF69B4FF);
 static const color STROKE_COLOR_TURQUOISE = COLOR_INIT_HEX(0x40E0D0FF);
-static color stroke_color;
+static color *stroke_color;
 static color stroke_color_primary;
 static color stroke_color_secondary;
 
@@ -457,14 +457,14 @@ void drawing_mouse_down(const sapp_event *e, point pt)
 		}
 		last_obj = object_da->elems + object_da->count-1; /* remember, needs to go after object_begin() */
 
-		object_start_stroke(last_obj, stroke_color);
+		object_start_stroke(last_obj, *stroke_color);
 		is_drawing_stroke = true;
 
 		if (cmd_curr.type != CMD_NONE)
 			puts("Warning: something ain't right. cmd_curr is not NONE.");
 		cmd_curr.type = CMD_STROKE_CREATE;
 		cmd_curr.v.stroke_data.point_da = da_point_create(DA_INITIAL_CAPACITY);
-		cmd_curr.v.stroke_data.color = stroke_color;
+		cmd_curr.v.stroke_data.color = *stroke_color;
 		cmd_curr.v.stroke_data.obj = last_obj;
 		cmd_curr.v.stroke_data.idx = last_obj->stroke_da->count-1;
 
@@ -511,7 +511,7 @@ void init(void)
 	clear_color = CLEAR_COLOR_DEFAULT;
 	stroke_color_primary = STROKE_COLOR_SCENE;
 	stroke_color_secondary = STROKE_COLOR_HOTPINK;
-	stroke_color = stroke_color_primary;
+	stroke_color = &stroke_color_primary;
 
 	screen_width = sapp_width();
 	screen_height = sapp_height();
@@ -533,9 +533,6 @@ void cleanup(void)
 
 void event(const sapp_event *e)
 {
-	static bool ctrl_held = false;
-	static bool alt_held = false;
-	
 	static point last_pt = { .coord = { FLT_MAX, FLT_MAX }, .pressure = .5 };
 	static uint64_t last_move = 0;
 
@@ -572,11 +569,6 @@ void event(const sapp_event *e)
 		screen_height = sapp_height();
 		break;
 	case SAPP_EVENTTYPE_KEY_DOWN:
-		if (!ctrl_held)
-			ctrl_held = (e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
-		if (!alt_held)
-			alt_held = (e->key_code == SAPP_KEYCODE_LEFT_ALT || e-> key_code == SAPP_KEYCODE_RIGHT_ALT);
-
 		if (e->key_code == SAPP_KEYCODE_P)
 			object_print(last_obj);
 
@@ -592,24 +584,30 @@ void event(const sapp_event *e)
 		}
 
 		/* TODO: These can screw things up if cmd_curr is ongoing */
-		if (ctrl_held && e->key_code == SAPP_KEYCODE_Z)
+		if ((e->modifiers & SAPP_MODIFIER_CTRL) && e->key_code == SAPP_KEYCODE_Z)
 			cmd_hist_undo();
-		if (ctrl_held && e->key_code == SAPP_KEYCODE_R)
+		if ((e->modifiers & SAPP_MODIFIER_CTRL) && e->key_code == SAPP_KEYCODE_R)
 			cmd_hist_redo();
 
-		if (e->key_code == SAPP_KEYCODE_1)
-			*(alt_held ? &stroke_color_secondary : &stroke_color_primary) = STROKE_COLOR_SCENE;
-		else if (e->key_code == SAPP_KEYCODE_2)
-			*(alt_held ? &stroke_color_secondary : &stroke_color_primary) = STROKE_COLOR_HOTPINK;
-		else if (e->key_code == SAPP_KEYCODE_3)
-			*(alt_held ? &stroke_color_secondary : &stroke_color_primary) = STROKE_COLOR_TURQUOISE;
-		stroke_color = stroke_color_primary;
+		stroke_color = &stroke_color_primary;
+		if (e->modifiers & SAPP_MODIFIER_ALT)
+			stroke_color = &stroke_color_secondary;
+
+		switch (e->key_code) {
+		case SAPP_KEYCODE_1:
+			*stroke_color = STROKE_COLOR_SCENE;
+			break;
+		case SAPP_KEYCODE_2:
+			*stroke_color = STROKE_COLOR_HOTPINK;
+			break;
+		case SAPP_KEYCODE_3:
+			*stroke_color = STROKE_COLOR_TURQUOISE;
+			break;
+		}
+
+		stroke_color = &stroke_color_primary;
 		break;
 	case SAPP_EVENTTYPE_KEY_UP:
-		if (ctrl_held)
-			ctrl_held = !(e->key_code == SAPP_KEYCODE_LEFT_CONTROL || e-> key_code == SAPP_KEYCODE_RIGHT_CONTROL);
-		if (alt_held)
-			alt_held = !(e->key_code == SAPP_KEYCODE_LEFT_ALT || e-> key_code == SAPP_KEYCODE_RIGHT_ALT);
 		if (e->key_code == SAPP_KEYCODE_X) {
 			is_deleting_stroke = false;
 			draw_closest_stroke_bounds = false;
@@ -653,9 +651,9 @@ void event(const sapp_event *e)
 		}
 
 		if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT)
-			stroke_color = stroke_color_primary;
+			stroke_color = &stroke_color_primary;
 		else if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT)
-			stroke_color = stroke_color_secondary;
+			stroke_color = &stroke_color_secondary;
 
 		drawing_mouse_down(e, pt);
 		break;
@@ -755,7 +753,7 @@ void frame(void)
 		if (mouse_in_frame) {
 			nvgBeginPath(vg);
 				nvgCircle(vg, roundf(mouse_screen.x), round(mouse_screen.y), zoom*STROKE_OPTS.size/1.5);
-			c = stroke_color;
+			c = *stroke_color;
 			nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/1.5));
 			nvgFill(vg);
 		}
