@@ -35,18 +35,24 @@ typedef struct { float x0, y0, x1, y1; } rect;
 
 typedef struct { vec2 coord; float pressure; } point;
 
+enum theme {
+	THEME_DARK,
+	THEME_LIGHT,
+	THEME_MAX,
+};
+
 #define T point
 #define name da_point
 #include "da.t.h"
 
 struct stroke {
-	size_t input_idx,
-	       input_count;
-	size_t vertex_idx,
-	       vertex_count;
-	rect   bounds;
-	color  color;
-	bool   deleted;
+	size_t       input_idx,
+	             input_count;
+	size_t       vertex_idx,
+	             vertex_count;
+	rect         bounds;
+	const color *colors;
+	bool         deleted;
 };
 
 #define T struct stroke
@@ -72,7 +78,7 @@ struct cmd {
 			struct object *obj;
 			int idx;
 			struct da_point *point_da; 
-			color color;
+			const color *colors;
 		} stroke_data;
 	} v;
 };
@@ -124,8 +130,17 @@ static int screen_width, screen_height;
 static NVGcontext *vg;
 static int font_handle;
 
-static const color CLEAR_COLOR_DEFAULT = { 25, 25, 25, 25 };
-static color clear_color;
+static const color COLOR_DEEP_CHARCOAL = COLOR_INIT_HEX(0x121212FF);
+static const color COLOR_SKIN = COLOR_INIT_HEX(0xF5E1D2FF);
+static const color COLOR_SCENE = COLOR_INIT_HEX(0xCCFF00FF);
+static const color COLOR_MARIGOLD = COLOR_INIT_HEX(0xD97706FF);
+static const color COLOR_HOTPINK = COLOR_INIT_HEX(0xFF69B4FF);
+static const color COLOR_RASPBERRY = COLOR_INIT_HEX(0xD81B60FF);
+static const color COLOR_TURQUOISE = COLOR_INIT_HEX(0x40E0D0FF);
+static const color COLOR_TEAL = COLOR_INIT_HEX(0x009688FF);
+
+static enum theme theme = THEME_DARK;
+static const color *clear_colors;
 
 static vec2 mouse_screen;
 static vec2 mouse_world;
@@ -142,12 +157,15 @@ static char command_input[COMMAND_INPUT_MAX];
 static size_t command_input_len = 0;
 
 
-static const color STROKE_COLOR_SCENE = COLOR_INIT_HEX(0xCCFF00FF);
-static const color STROKE_COLOR_HOTPINK = COLOR_INIT_HEX(0xFF69B4FF);
-static const color STROKE_COLOR_TURQUOISE = COLOR_INIT_HEX(0x40E0D0FF);
-static color *stroke_color;
-static color stroke_color_primary;
-static color stroke_color_secondary;
+static const color COLORS_BACKGROUND[THEME_MAX] = { COLOR_DEEP_CHARCOAL, COLOR_SKIN };
+static const color COLORS_CONTRAST[THEME_MAX] = { COLOR_SKIN, COLOR_DEEP_CHARCOAL };
+static const color COLORS_YELLOW[THEME_MAX] = { COLOR_SCENE, COLOR_MARIGOLD };
+static const color COLORS_BLUE[THEME_MAX] = { COLOR_TURQUOISE, COLOR_TEAL };
+static const color COLORS_RED[THEME_MAX] = { COLOR_HOTPINK, COLOR_RASPBERRY };
+
+static const color **active_stroke_colors;
+static const color *stroke_colors_primary;
+static const color *stroke_colors_secondary;
 
 static bool is_panning = false;
 static vec2 pan_pivot_mouse;
@@ -255,7 +273,7 @@ void object_print(const struct object *obj)
 		printf("stroke[%zu]\n", i);
 		printf("  input: idx %zu, count %zu\n", s->input_idx, s->input_count);
 		printf("  vertex: idx %zu, count %zu\n", s->vertex_idx, s->vertex_count);
-		printf("  color: (%d, %d, %d, %d)\n", s->color.r, s->color.g, s->color.b, s->color.a);
+		printf("  colors[%d]: (%d, %d, %d, %d)\n", theme, s->colors[theme].r, s->colors[theme].g, s->colors[theme].b, s->colors[theme].a);
 	}
 	puts("");
 }
@@ -284,16 +302,16 @@ void object_outline_last_stroke(struct object *obj)
 	last->vertex_count = obj->vertex_pfh_buf.count - last->vertex_idx;
 }
 
-void object_start_stroke(struct object *obj, color color)
+void object_start_stroke(struct object *obj, const color *colors)
 {
 	obj->stroke_da = da_stroke_append(obj->stroke_da, (struct stroke) { 
-		.input_idx = obj->input_da->count, 
-		.input_count = 0,
-		.vertex_idx = obj->vertex_pfh_buf.count, 
+		.input_idx    = obj->input_da->count, 
+		.input_count  = 0,
+		.vertex_idx   = obj->vertex_pfh_buf.count, 
 		.vertex_count = 0,
-		.color = color,
-		.bounds = BOUNDS_INIT_DEFAULT,
-		.deleted = false,
+		.colors       = colors,
+		.bounds       = BOUNDS_INIT_DEFAULT,
+		.deleted      = false,
 	});
 }
 
@@ -403,7 +421,7 @@ static void cmd_hist_record(struct cmd cmd)
 
 static void cmd_stroke_create(struct cmd cmd)
 {
-	object_start_stroke(object_da->elems + object_da->count-1, cmd.v.stroke_data.color);
+	object_start_stroke(object_da->elems + object_da->count-1, cmd.v.stroke_data.colors);
 	object_append_points(
 		object_da->elems + object_da->count-1,
 		cmd.v.stroke_data.point_da->elems,
@@ -478,14 +496,14 @@ void drawing_mouse_down(const sapp_event *e, point pt)
 		}
 		last_obj = object_da->elems + object_da->count-1; /* remember, needs to go after object_begin() */
 
-		object_start_stroke(last_obj, *stroke_color);
+		object_start_stroke(last_obj, *active_stroke_colors);
 		is_drawing_stroke = true;
 
 		if (cmd_curr.type != CMD_NONE)
 			puts("Warning: something ain't right. cmd_curr is not NONE.");
 		cmd_curr.type = CMD_STROKE_CREATE;
 		cmd_curr.v.stroke_data.point_da = da_point_create(DA_INITIAL_CAPACITY);
-		cmd_curr.v.stroke_data.color = *stroke_color;
+		cmd_curr.v.stroke_data.colors = *active_stroke_colors;
 		cmd_curr.v.stroke_data.obj = last_obj;
 		cmd_curr.v.stroke_data.idx = last_obj->stroke_da->count-1;
 
@@ -529,10 +547,10 @@ void init(void)
 
 	object_da = da_object_create(DA_INITIAL_CAPACITY);
 
-	clear_color = CLEAR_COLOR_DEFAULT;
-	stroke_color_primary = STROKE_COLOR_SCENE;
-	stroke_color_secondary = STROKE_COLOR_HOTPINK;
-	stroke_color = &stroke_color_primary;
+	clear_colors = COLORS_BACKGROUND;
+	stroke_colors_primary = COLORS_YELLOW;
+	stroke_colors_secondary = COLORS_RED;
+	active_stroke_colors = &stroke_colors_primary;
 
 	screen_width = sapp_width();
 	screen_height = sapp_height();
@@ -614,24 +632,27 @@ void event_drawing(const sapp_event *e)
 		if ((e->modifiers & SAPP_MODIFIER_CTRL) && e->key_code == SAPP_KEYCODE_R)
 			cmd_hist_redo();
 
-		stroke_color = &stroke_color_primary;
+		active_stroke_colors = &stroke_colors_primary;
 		if (e->modifiers & SAPP_MODIFIER_ALT)
-			stroke_color = &stroke_color_secondary;
+			active_stroke_colors = &stroke_colors_secondary;
 
 		switch (e->key_code) {
 		case SAPP_KEYCODE_1:
-			*stroke_color = STROKE_COLOR_SCENE;
+			*active_stroke_colors = COLORS_YELLOW;
 			break;
 		case SAPP_KEYCODE_2:
-			*stroke_color = STROKE_COLOR_HOTPINK;
+			*active_stroke_colors = COLORS_RED;
 			break;
 		case SAPP_KEYCODE_3:
-			*stroke_color = STROKE_COLOR_TURQUOISE;
+			*active_stroke_colors = COLORS_BLUE;
+			break;
+		case SAPP_KEYCODE_4:
+			*active_stroke_colors = COLORS_CONTRAST;
 			break;
 		default: break;
 		}
 
-		stroke_color = &stroke_color_primary;
+		active_stroke_colors = &stroke_colors_primary;
 		break;
 	case SAPP_EVENTTYPE_KEY_UP:
 		if (e->key_code == SAPP_KEYCODE_X) {
@@ -677,9 +698,9 @@ void event_drawing(const sapp_event *e)
 		}
 
 		if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT)
-			stroke_color = &stroke_color_primary;
+			active_stroke_colors = &stroke_colors_primary;
 		else if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT)
-			stroke_color = &stroke_color_secondary;
+			active_stroke_colors = &stroke_colors_secondary;
 
 		drawing_mouse_down(e, pt);
 		break;
@@ -701,8 +722,15 @@ void event_drawing(const sapp_event *e)
 
 void command_run(const char *str)
 {
-	if (strcasecmp(str, "light") == 0)
-		clear_color = COLOR_FROM_HEX(0xFFFFFF);
+	if (strcasecmp(str, "light") == 0 || (str[0] == 'l')) {
+		puts("Switch to light");
+		theme = THEME_LIGHT;
+	} if (strcasecmp(str, "dark") == 0 || (str[0] == 'd')) {
+		puts("Switch to light");
+		theme = THEME_DARK;
+	} if (strcasecmp(str, "quit") == 0 || (str[0] == 'q')) {
+		sapp_request_quit();
+	}
 }
 
 void event_command(const sapp_event *e)
@@ -720,6 +748,9 @@ void event_command(const sapp_event *e)
 			command_input_len--;
 		break;
 	case SAPP_KEYCODE_ENTER:
+		command_input[command_input_len] = '\0';
+		command_run(command_input);
+		/* fall through */
 	case SAPP_KEYCODE_ESCAPE:
 		input_state = INPUT_STATE_DRAWING;
 		command_input_len = 0;
@@ -765,6 +796,7 @@ void draw_object(struct object *obj)
 	struct stroke *s;
 	pfh_vec2 *s_vertices;
 	pfh_vec2 p0, p1;
+	color c;
 
 	for (i = 0; i < obj->stroke_da->count; i++) {
 		s = obj->stroke_da->elems + i;
@@ -774,9 +806,10 @@ void draw_object(struct object *obj)
 			continue;
 
 		s_vertices = obj->vertex_pfh_buf.elems + s->vertex_idx;
+		c = s->colors[theme];
 
 		nvgBeginPath(vg);
-		nvgFillColor(vg, nvgRGBA(s->color.r, s->color.g, s->color.b, s->color.a));
+		nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
 
 		p0 = s_vertices[s->vertex_count-1];
 		p1 = s_vertices[0];
@@ -811,8 +844,9 @@ void draw_objects(void)
 
 void draw_command_ui(void)
 {
-	const float FONT_SIZE = 24.0;
+	const float FONT_SIZE = 26.0;
 	size_t len;
+	color c = COLORS_CONTRAST[theme];
 
 	if (input_state != INPUT_STATE_COMMAND) /* if we want to display some output, add timer here */
 		return;
@@ -821,7 +855,7 @@ void draw_command_ui(void)
 
 	nvgFontSize(vg, FONT_SIZE);
 	nvgFontFaceId(vg, font_handle);
-	nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
+	nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
 	nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
 	nvgText(vg, 0 + FONT_SIZE, screen_height - FONT_SIZE, command_display, command_display + len);
 }
@@ -833,7 +867,7 @@ void frame(void)
 	dpi_scale = sapp_dpi_scale();
 
 	glViewport(0, 0, screen_width, screen_height);
-	glClearColor(clear_color.r/255.0f, clear_color.g/255.0f, clear_color.b/255.0f, clear_color.a/255.0f);
+	glClearColor(clear_colors[theme].r/255.0f, clear_colors[theme].g/255.0f, clear_colors[theme].b/255.0f, clear_colors[theme].a/255.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
 	nvgBeginFrame(vg, screen_width/dpi_scale, screen_height/dpi_scale, dpi_scale);
@@ -847,7 +881,7 @@ void frame(void)
 		if (mouse_in_frame) {
 			nvgBeginPath(vg);
 				nvgCircle(vg, roundf(mouse_screen.x), round(mouse_screen.y), zoom*STROKE_OPTS.size/1.5);
-			c = *stroke_color;
+			c = (*active_stroke_colors)[theme];
 			nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/1.5));
 			nvgFill(vg);
 		}
