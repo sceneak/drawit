@@ -17,7 +17,7 @@
 #define CMD_HIST_MAX 256
 #define STROKE_BOUNDS_MARGIN 5
 #define MAX_SPEED_INCH 1200 /* will mult. by dpi_scale */
-#define COMMAND_INPUT_MAX 512
+#define COMMAND_MAX 512
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 #define COLOR_INIT_HEX(hex) {             \
@@ -152,9 +152,8 @@ static float zoom = 1.0f;
 static enum input_state input_state = INPUT_STATE_DRAWING;
 
 
-static char command_display[COMMAND_INPUT_MAX + 1];
-static char command_input[COMMAND_INPUT_MAX];
-static size_t command_input_len = 0;
+static char command_buf[COMMAND_MAX];
+static size_t command_buf_len = 0;
 
 
 static const color COLORS_BACKGROUND[THEME_MAX] = { COLOR_DEEP_CHARCOAL, COLOR_SKIN };
@@ -539,7 +538,41 @@ void drawing_mouse_up()
 	}
 }
 
+void command_buf_run()
+{
+	const char *str = command_buf;
+
+	command_buf[command_buf_len] = '\0';
+
+	if (str[0] == ':') {
+		str++;
+		if (strcasecmp(str, "light") == 0 || (str[0] == 'l')) {
+			theme = THEME_LIGHT;
+			command_buf_len = snprintf(command_buf, ARRAY_SIZE(command_buf), "theme=light");
+		} else if (strcasecmp(str, "dark") == 0 || (str[0] == 'd')) {
+			theme = THEME_DARK;
+			command_buf_len = snprintf(command_buf, ARRAY_SIZE(command_buf), "theme=dark");
+		} else if (strcasecmp(str, "quit") == 0 || (str[0] == 'q')) {
+			sapp_request_quit();
+		} else {
+			command_buf_len = snprintf(command_buf, ARRAY_SIZE(command_buf), "unknown command");
+		}
+	}
+}
+
 /************ SOKOL APP ************/
+
+void input_state_set_drawing(void)
+{
+	input_state = INPUT_STATE_DRAWING;
+	sapp_show_mouse(false);
+}
+void input_state_set_command(void)
+{
+	command_buf_len = 0;
+	input_state = INPUT_STATE_COMMAND;
+	sapp_show_mouse(true);
+}
 
 void init(void) 
 {
@@ -559,7 +592,7 @@ void init(void)
 
 	font_handle = nvgCreateFontMem(vg, "Inconsolata-Regular-Sub", (uint8_t *)inconsolata_ttf, inconsolata_ttf_len, 0);
 
-	sapp_show_mouse(false);
+	input_state_set_drawing();
 
 #ifdef _WIN32
 	#include <windows.h>
@@ -582,6 +615,9 @@ void event_drawing(const sapp_event *e)
 	struct object *last_obj = object_da->elems + object_da->count-1;
 	point pt;
 	double delta, vel;
+
+	if (input_state != INPUT_STATE_DRAWING)
+		return;
 
 	switch(e->type) {
 	case SAPP_EVENTTYPE_MOUSE_ENTER:
@@ -608,9 +644,8 @@ void event_drawing(const sapp_event *e)
 
 	switch(e->type) {
 	case SAPP_EVENTTYPE_CHAR: 
-		/* If this was in KEY_DOWN, next event call would be CHAR on event_command(e) */
 		if (e->char_code == ':') {
-			input_state = INPUT_STATE_COMMAND;
+			input_state_set_command();
 			break;
 		}
 		break;
@@ -720,23 +755,17 @@ void event_drawing(const sapp_event *e)
 	}
 }
 
-void command_run(const char *str)
-{
-	if (strcasecmp(str, "light") == 0 || (str[0] == 'l')) {
-		puts("Switch to light");
-		theme = THEME_LIGHT;
-	} if (strcasecmp(str, "dark") == 0 || (str[0] == 'd')) {
-		puts("Switch to light");
-		theme = THEME_DARK;
-	} if (strcasecmp(str, "quit") == 0 || (str[0] == 'q')) {
-		sapp_request_quit();
-	}
-}
-
 void event_command(const sapp_event *e)
 {
-	if (e->type == SAPP_EVENTTYPE_CHAR && command_input_len < COMMAND_INPUT_MAX) {
-		command_input[command_input_len++] = e->char_code;
+	if (input_state != INPUT_STATE_COMMAND) {
+		if (command_buf_len && e->type == SAPP_EVENTTYPE_MOUSE_DOWN) {
+			command_buf_len = 0;
+		}
+		return;
+	}
+
+	if (e->type == SAPP_EVENTTYPE_CHAR && command_buf_len < COMMAND_MAX) {
+		command_buf[command_buf_len++] = e->char_code;
 		return;
 	}
 	if (e->type != SAPP_EVENTTYPE_KEY_DOWN)
@@ -744,16 +773,17 @@ void event_command(const sapp_event *e)
 
 	switch(e->key_code) {
 	case SAPP_KEYCODE_BACKSPACE:
-		if (command_input_len > 0)
-			command_input_len--;
+		if (command_buf_len <= 1)
+			break;
+		command_buf_len--;
 		break;
 	case SAPP_KEYCODE_ENTER:
-		command_input[command_input_len] = '\0';
-		command_run(command_input);
-		/* fall through */
+		command_buf_run();
+		input_state_set_drawing();
+		break;
 	case SAPP_KEYCODE_ESCAPE:
-		input_state = INPUT_STATE_DRAWING;
-		command_input_len = 0;
+		input_state_set_drawing();
+		command_buf_len = 0;
 		break;
 	default: break;
 	}
@@ -769,16 +799,8 @@ void event(const sapp_event *e)
 	default: break;
 	}
 
-	switch(input_state) {
-	case INPUT_STATE_DRAWING:
-		event_drawing(e);
-		break;
-	case INPUT_STATE_COMMAND:
-		event_command(e);
-		break;
-	default: break;
-	}
-
+	event_drawing(e);
+	event_command(e);
 }
 
 void draw_rect(rect r)
@@ -842,22 +864,19 @@ void draw_objects(void)
 	}
 }
 
-void draw_command_ui(void)
+void draw_command_buf(void)
 {
 	const float FONT_SIZE = 26.0;
-	size_t len;
 	color c = COLORS_CONTRAST[theme];
 
-	if (input_state != INPUT_STATE_COMMAND) /* if we want to display some output, add timer here */
+	if (!command_buf_len)
 		return;
-
-	len = snprintf(command_display, ARRAY_SIZE(command_display), ":%.*s", (int)command_input_len, command_input);
 
 	nvgFontSize(vg, FONT_SIZE);
 	nvgFontFaceId(vg, font_handle);
 	nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
 	nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
-	nvgText(vg, 0 + FONT_SIZE, screen_height - FONT_SIZE, command_display, command_display + len);
+	nvgText(vg, 0 + FONT_SIZE, screen_height - FONT_SIZE, command_buf, command_buf + command_buf_len);
 }
 
 void frame(void) 
@@ -878,14 +897,14 @@ void frame(void)
 	nvgTranslate(vg, -camera.x, -camera.y);
 		draw_objects();
 	nvgRestore(vg);
-		if (mouse_in_frame) {
+		if (input_state == INPUT_STATE_DRAWING && mouse_in_frame) {
 			nvgBeginPath(vg);
 				nvgCircle(vg, roundf(mouse_screen.x), round(mouse_screen.y), zoom*STROKE_OPTS.size/1.5);
 			c = (*active_stroke_colors)[theme];
 			nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/1.5));
 			nvgFill(vg);
 		}
-		draw_command_ui();
+		draw_command_buf();
 	nvgEndFrame(vg);
 }
 
