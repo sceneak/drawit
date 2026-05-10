@@ -216,8 +216,6 @@ void pfh_get_stroke(pfh_vec2_buf *dest, const pfh_point pts[], size_t pts_count,
 void pfh_get_stroke_points(pfh_stroke_point_buf *dest, const pfh_point pts[], size_t pts_count, const pfh_stroke_opts *opts)
 {
 	pfh_point pts_local[2];
-	const pfh_point *pts_to_process = pts;
-	size_t pts_to_process_count = pts_count;
 
 	if (pts_count == 0)
 		return;
@@ -452,8 +450,8 @@ void pfh_get_stroke_outline_points(pfh_vec2_buf *dest, const pfh_stroke_point st
 	Find the outline's left and right stroke_pts
 	skipping the first and last points, which will get caps later on.
 	*/
-	for (int i = 0; i < stroke_pts_count; i++) {
-		bool is_last_pt = i == stroke_pts_count - 1;
+	for (size_t i = 0; i < stroke_pts_count; i++) {
+		bool is_last_pt = i == (stroke_pts_count - 1);
 
 		if (!is_last_pt && total_length - stroke_pts[i].running_length < PFH_END_NOISE_THRESHOLD)
 			continue;

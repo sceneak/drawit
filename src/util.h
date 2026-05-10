@@ -1,6 +1,8 @@
 #ifndef UTIL_H
 #define UTIL_H
 
+#include <ctype.h>
+
 #if defined(__GNUC__) || defined(__clang__)
 	#define NO_DISCARD __attribute__((warn_unused_result))
 #elif __STDC_VERSION__ >= 202311L
@@ -16,5 +18,14 @@
 #define CAT(a, b) _CAT(a, b)
 
 #define min(a, b) ( (a) < (b) ? (a) : (b) )
+
+static inline int strcasecmp(const char *s1, const char *s2)
+{
+    while (*s1 && (tolower((unsigned char)*s1) == tolower((unsigned char)*s2))) {
+        s1++;
+        s2++;
+    }
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
 
 #endif

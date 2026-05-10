@@ -17,6 +17,7 @@
 #define CMD_HIST_MAX 256
 #define STROKE_BOUNDS_MARGIN 5
 #define MAX_SPEED_INCH 1200 /* will mult. by dpi_scale */
+#define COMMAND_INPUT_MAX 512
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 #define COLOR_INIT_HEX(hex) {             \
@@ -39,13 +40,13 @@ typedef struct { vec2 coord; float pressure; } point;
 #include "da.t.h"
 
 struct stroke {
-	int input_idx,
-	    input_count; /* is this appropriate? */
-	int vertex_idx,
-	    vertex_count; /* is this appropriate? */
-	rect bounds;
-	color color;
-	bool deleted;
+	size_t input_idx,
+	       input_count;
+	size_t vertex_idx,
+	       vertex_count;
+	rect   bounds;
+	color  color;
+	bool   deleted;
 };
 
 #define T struct stroke
@@ -77,10 +78,16 @@ struct cmd {
 };
 
 struct cmd_hist {
-	size_t before_first;
-	size_t last;
+	long before_first;
+	long last;
 	long cursor;
 	struct cmd cmds[CMD_HIST_MAX];
+};
+
+enum input_state {
+	INPUT_STATE_DRAWING,
+	INPUT_STATE_COMMAND,
+	INPUT_STATE_TEXT,
 };
 
 
@@ -99,18 +106,41 @@ struct cmd_hist {
                 .y1 = -INFINITY, \
         }
 
+/************ GLOBALS & STATE ************/
+
+#include "gen/inconsolata_ttf.h"
+
 static const uint8_t APP_ICON_32x32[] = {
-#ifndef __INTELLISENSE__ /* stupid lsp won't include properly */
+#ifndef __INTELLISENSE__
 #include "gen/icon32x32.inc"
 #else
 0
 #endif
 };
 
-static float zoom_frac = 0.1f;
+
+static float dpi_scale; /* needs to be cached due to sokol wackyness */
+static int screen_width, screen_height;
+static NVGcontext *vg;
+static int font_handle;
 
 static const color CLEAR_COLOR_DEFAULT = { 25, 25, 25, 25 };
 static color clear_color;
+
+static vec2 mouse_screen;
+static vec2 mouse_world;
+static bool mouse_in_frame = true;
+static vec2 camera = {0, 0};
+static float zoom_frac = 0.1f;
+static float zoom = 1.0f;
+
+static enum input_state input_state = INPUT_STATE_DRAWING;
+
+
+static char command_display[COMMAND_INPUT_MAX + 1];
+static char command_input[COMMAND_INPUT_MAX];
+static size_t command_input_len = 0;
+
 
 static const color STROKE_COLOR_SCENE = COLOR_INIT_HEX(0xCCFF00FF);
 static const color STROKE_COLOR_HOTPINK = COLOR_INIT_HEX(0xFF69B4FF);
@@ -118,15 +148,6 @@ static const color STROKE_COLOR_TURQUOISE = COLOR_INIT_HEX(0x40E0D0FF);
 static color *stroke_color;
 static color stroke_color_primary;
 static color stroke_color_secondary;
-
-static float dpi_scale; /* needs to be cached due to sokol wackyness */
-static int screen_width, screen_height;
-static NVGcontext *vg;
-static vec2 mouse_screen;
-static vec2 mouse_world;
-static bool mouse_in_frame = true;
-static vec2 camera = {0, 0};
-static float zoom = 1.0f;
 
 static bool is_panning = false;
 static vec2 pan_pivot_mouse;
@@ -223,7 +244,7 @@ static inline bool rect_contains(rect r, vec2 v)
 
 void object_print(const struct object *obj) 
 {
-	int i;
+	size_t i;
 	struct stroke *s;
 
 	printf("inputs (%zu)\n", obj->input_da->count);
@@ -231,9 +252,9 @@ void object_print(const struct object *obj)
 	puts("stroke_da:");
 	for (i = 0; i < obj->stroke_da->count; i++) {
 		s = obj->stroke_da->elems + i;
-		printf("stroke[%d]\n", i);
-		printf("  input: idx %d, count %d\n", s->input_idx, s->input_count);
-		printf("  vertex: idx %d, count %d\n", s->vertex_idx, s->vertex_count);
+		printf("stroke[%zu]\n", i);
+		printf("  input: idx %zu, count %zu\n", s->input_idx, s->input_count);
+		printf("  vertex: idx %zu, count %zu\n", s->vertex_idx, s->vertex_count);
 		printf("  color: (%d, %d, %d, %d)\n", s->color.r, s->color.g, s->color.b, s->color.a);
 	}
 	puts("");
@@ -322,7 +343,7 @@ float object_stroke_dist(const struct object *obj, int stroke_idx, vec2 v)
 	const point *s_inputs = obj->input_da->elems + s->input_idx;
 	float closest_dist2 = FLT_MAX;
 	float dist2;
-	int i;
+	size_t i;
 
 	for (i = 0; i < s->input_count; i++) {
 		dist2 = vec2_dist2(v, s_inputs[i].coord);
@@ -517,7 +538,11 @@ void init(void)
 	screen_height = sapp_height();
 	gladLoaderLoadGL();
 	vg = nvgCreateGL3(NVG_ANTIALIAS | NVG_STENCIL_STROKES);
+
+	font_handle = nvgCreateFontMem(vg, "Inconsolata-Regular-Sub", (uint8_t *)inconsolata_ttf, inconsolata_ttf_len, 0);
+
 	sapp_show_mouse(false);
+
 #ifdef _WIN32
 	#include <windows.h>
 	HWND hwnd = (HWND)sapp_win32_get_hwnd();
@@ -531,7 +556,7 @@ void cleanup(void)
 	nvgDeleteGL3(vg);
 }
 
-void event(const sapp_event *e)
+void event_drawing(const sapp_event *e)
 {
 	static point last_pt = { .coord = { FLT_MAX, FLT_MAX }, .pressure = .5 };
 	static uint64_t last_move = 0;
@@ -564,14 +589,14 @@ void event(const sapp_event *e)
 	}
 
 	switch(e->type) {
-	case SAPP_EVENTTYPE_RESIZED:
-		screen_width = sapp_width();
-		screen_height = sapp_height();
+	case SAPP_EVENTTYPE_CHAR: 
+		/* If this was in KEY_DOWN, next event call would be CHAR on event_command(e) */
+		if (e->char_code == ':') {
+			input_state = INPUT_STATE_COMMAND;
+			break;
+		}
 		break;
 	case SAPP_EVENTTYPE_KEY_DOWN:
-		if (e->key_code == SAPP_KEYCODE_P)
-			object_print(last_obj);
-
 		if (e->key_code == SAPP_KEYCODE_X) {
 			is_deleting_stroke = true;
 			draw_closest_stroke_bounds = true;
@@ -603,6 +628,7 @@ void event(const sapp_event *e)
 		case SAPP_KEYCODE_3:
 			*stroke_color = STROKE_COLOR_TURQUOISE;
 			break;
+		default: break;
 		}
 
 		stroke_color = &stroke_color_primary;
@@ -673,6 +699,57 @@ void event(const sapp_event *e)
 	}
 }
 
+void command_run(const char *str)
+{
+	if (strcasecmp(str, "light") == 0)
+		clear_color = COLOR_FROM_HEX(0xFFFFFF);
+}
+
+void event_command(const sapp_event *e)
+{
+	if (e->type == SAPP_EVENTTYPE_CHAR && command_input_len < COMMAND_INPUT_MAX) {
+		command_input[command_input_len++] = e->char_code;
+		return;
+	}
+	if (e->type != SAPP_EVENTTYPE_KEY_DOWN)
+		return;
+
+	switch(e->key_code) {
+	case SAPP_KEYCODE_BACKSPACE:
+		if (command_input_len > 0)
+			command_input_len--;
+		break;
+	case SAPP_KEYCODE_ENTER:
+	case SAPP_KEYCODE_ESCAPE:
+		input_state = INPUT_STATE_DRAWING;
+		command_input_len = 0;
+		break;
+	default: break;
+	}
+}
+
+void event(const sapp_event *e)
+{
+	switch(e->type) {
+	case SAPP_EVENTTYPE_RESIZED:
+		screen_width = sapp_width();
+		screen_height = sapp_height();
+		break;
+	default: break;
+	}
+
+	switch(input_state) {
+	case INPUT_STATE_DRAWING:
+		event_drawing(e);
+		break;
+	case INPUT_STATE_COMMAND:
+		event_command(e);
+		break;
+	default: break;
+	}
+
+}
+
 void draw_rect(rect r)
 {
 	nvgBeginPath(vg);
@@ -684,7 +761,7 @@ void draw_rect(rect r)
 
 void draw_object(struct object *obj)
 {
-	int i, j;
+	size_t i, j;
 	struct stroke *s;
 	pfh_vec2 *s_vertices;
 	pfh_vec2 p0, p1;
@@ -732,6 +809,23 @@ void draw_objects(void)
 	}
 }
 
+void draw_command_ui(void)
+{
+	const float FONT_SIZE = 24.0;
+	size_t len;
+
+	if (input_state != INPUT_STATE_COMMAND) /* if we want to display some output, add timer here */
+		return;
+
+	len = snprintf(command_display, ARRAY_SIZE(command_display), ":%.*s", (int)command_input_len, command_input);
+
+	nvgFontSize(vg, FONT_SIZE);
+	nvgFontFaceId(vg, font_handle);
+	nvgFillColor(vg, nvgRGBA(255, 255, 255, 255));
+	nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+	nvgText(vg, 0 + FONT_SIZE, screen_height - FONT_SIZE, command_display, command_display + len);
+}
+
 void frame(void) 
 {
 	color c;
@@ -757,6 +851,7 @@ void frame(void)
 			nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/1.5));
 			nvgFill(vg);
 		}
+		draw_command_ui();
 	nvgEndFrame(vg);
 }
 

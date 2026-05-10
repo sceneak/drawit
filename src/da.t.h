@@ -33,10 +33,11 @@ NO_DISCARD static inline struct name *CAT(name, _create)(size_t capacity)
 		alloc->capacity = capacity;
 	return alloc;
 }
+
 NO_DISCARD static inline struct name *CAT(name, _append_empty)(struct name *da, int extra)
 {
 	struct name *temp;
-	int new_capacity = da->capacity;
+	size_t new_capacity = da->capacity;
 
 	while (da->count + extra >= new_capacity) new_capacity *= 2;
 	if (new_capacity == da->capacity)
@@ -56,13 +57,15 @@ NO_DISCARD static inline struct name *CAT(name, _append_empty)(struct name *da, 
 	da->capacity = new_capacity;
 	return da;
 }
+
 NO_DISCARD static inline struct name *CAT(name, _append)(struct name *da, T elem)
 {
 	da = CAT(name, _append_empty)(da, 1);
 	da->elems[da->count-1] = elem;
 	return da;
 }
-NO_DISCARD static inline struct name *CAT(name, _append_n)(struct name *da, T elem[], int n)
+
+NO_DISCARD static inline struct name *CAT(name, _append_n)(struct name *da, const T elem[], int n)
 {
 	int i;
 	da = CAT(name, _append_empty)(da, n);
