@@ -59,10 +59,18 @@ struct stroke_desc {
 #define name da_stroke_desc
 #include "da.t.h"
 
-struct canvas {
+struct stroke_ctx {
 	struct da_point       *input_da;
 	pfh_vec2_buf           pfh_vertex_buf;
 	struct da_stroke_desc *desc_da;
+};
+
+struct text_canvas {
+};
+
+struct canvas {
+	struct stroke_ctx stroke_ctx;
+	struct text_canvas text_canvas;
 };
 
 enum cmd_type {
@@ -76,10 +84,10 @@ struct cmd {
 	union {
 		struct cmd_stroke_data {
 			int idx;
-			struct canvas *canvas;
+			struct stroke_ctx *stroke_ctx;
 			struct da_point *point_da; 
 			const color *colors;
-		} stroke_data;
+		} stroke;
 	} v;
 };
 
@@ -169,7 +177,7 @@ static vec2 pan_pivot_camera;
 static bool draw_closest_stroke_bounds = false;
 static bool is_drawing_stroke = false;
 static bool is_deleting_stroke = false;
-static struct canvas active_canvas;
+static struct canvas curr_canvas;
 
 static struct cmd cmd_curr;
 static struct cmd_hist cmd_hist;
@@ -254,16 +262,16 @@ static inline bool rect_contains(rect r, vec2 v)
 
 /************ CANVAS (STROKE SOA) ************/
 
-void canvas_print(const struct canvas *canvas) 
+void stroke_ctx_print(const struct stroke_ctx *ctx) 
 {
 	size_t i;
 	struct stroke_desc *s;
 
-	printf("inputs (%zu)\n", canvas->input_da->count);
-	printf("vertices (%zu)\n", canvas->pfh_vertex_buf.count);
+	printf("inputs (%zu)\n", ctx->input_da->count);
+	printf("vertices (%zu)\n", ctx->pfh_vertex_buf.count);
 	puts("desc_da:");
-	for (i = 0; i < canvas->desc_da->count; i++) {
-		s = canvas->desc_da->elems + i;
+	for (i = 0; i < ctx->desc_da->count; i++) {
+		s = ctx->desc_da->elems + i;
 		printf("stroke_desc[%zu]\n", i);
 		printf("  input: idx %zu, count %zu\n", s->input_idx, s->input_count);
 		printf("  vertex: idx %zu, count %zu\n", s->vertex_idx, s->vertex_count);
@@ -274,20 +282,23 @@ void canvas_print(const struct canvas *canvas)
 
 struct canvas canvas_create_empty()
 {
-	struct canvas canvas = {
+	struct stroke_ctx stroke_ctx = {
 		.desc_da = da_stroke_desc_create(DA_INITIAL_CAPACITY),
 		.input_da = da_point_create(DA_INITIAL_CAPACITY),
 	};
-	pfh_vec2_buf_init(&canvas.pfh_vertex_buf, DA_INITIAL_CAPACITY);
-	return canvas;
+	pfh_vec2_buf_init(&stroke_ctx.pfh_vertex_buf, DA_INITIAL_CAPACITY);
+
+	return (struct canvas) {
+		stroke_ctx
+	};
 }
 
-void canvas_begin_stroke(struct canvas *canvas, const color *colors)
+void stroke_ctx_begin(struct stroke_ctx *ctx, const color *colors)
 {
-	canvas->desc_da = da_stroke_desc_append(canvas->desc_da, (struct stroke_desc) { 
-		.input_idx    = canvas->input_da->count, 
+	ctx->desc_da = da_stroke_desc_append(ctx->desc_da, (struct stroke_desc) { 
+		.input_idx    = ctx->input_da->count, 
 		.input_count  = 0,
-		.vertex_idx   = canvas->pfh_vertex_buf.count, 
+		.vertex_idx   = ctx->pfh_vertex_buf.count, 
 		.vertex_count = 0,
 		.colors       = colors,
 		.bounds       = BOUNDS_INIT_DEFAULT,
@@ -295,64 +306,64 @@ void canvas_begin_stroke(struct canvas *canvas, const color *colors)
 	});
 }
 
-void canvas_outline_last(struct canvas *canvas)
+void stroke_ctx_render_last(struct stroke_ctx *ctx)
 {
-	struct stroke_desc *last = canvas->desc_da->elems + canvas->desc_da->count-1;
+	struct stroke_desc *last = ctx->desc_da->elems + ctx->desc_da->count-1;
 
-	canvas->pfh_vertex_buf.count = last->vertex_idx;
+	ctx->pfh_vertex_buf.count = last->vertex_idx;
 	pfh_get_stroke(
-		&canvas->pfh_vertex_buf,
-		(pfh_point*)canvas->input_da->elems + last->input_idx,
+		&ctx->pfh_vertex_buf,
+		(pfh_point*)ctx->input_da->elems + last->input_idx,
 		last->input_count,
 		&STROKE_OPTS
 	);
-	last->vertex_count = canvas->pfh_vertex_buf.count - last->vertex_idx;
+	last->vertex_count = ctx->pfh_vertex_buf.count - last->vertex_idx;
 }
 
-void canvas_append_point(struct canvas *canvas, point pt)
+void stroke_ctx_append_point(struct stroke_ctx *ctx, point pt)
 {
-	struct stroke_desc *s = canvas->desc_da->elems + canvas->desc_da->count-1;
+	struct stroke_desc *s = ctx->desc_da->elems + ctx->desc_da->count-1;
 	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
-	canvas->input_da = da_point_append(canvas->input_da, pt);
+	ctx->input_da = da_point_append(ctx->input_da, pt);
 	s->input_count++;
 	s->bounds = rect_fit_rect(s->bounds, rect_create(pt.coord, PT_EXTENTS));
 
-	canvas_outline_last(canvas);
+	stroke_ctx_render_last(ctx);
 }
 
-void canvas_append_points(struct canvas *canvas, point pts[], int count)
+void stroke_ctx_append_points(struct stroke_ctx *ctx, point pts[], int count)
 {
 	int i;
-	struct stroke_desc *s = canvas->desc_da->elems + canvas->desc_da->count-1;
+	struct stroke_desc *s = ctx->desc_da->elems + ctx->desc_da->count-1;
 	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
-	canvas->input_da = da_point_append_n(canvas->input_da, pts, count);
+	ctx->input_da = da_point_append_n(ctx->input_da, pts, count);
 	s->input_count += count;
 	for (i = 0; i < count; i++)
 		s->bounds = rect_fit_rect(s->bounds, rect_create(pts[i].coord, PT_EXTENTS));
 
-	canvas_outline_last(canvas);
+	stroke_ctx_render_last(ctx);
 }
 
-void canvas_mark_delete(struct canvas *canvas, int stroke_idx, bool deleted)
+void stroke_ctx_mark_delete(struct stroke_ctx *ctx, int stroke_idx, bool deleted)
 {
-	canvas->desc_da->elems[stroke_idx].deleted = deleted;
+	ctx->desc_da->elems[stroke_idx].deleted = deleted;
 }
 
-void canvas_delete_last(struct canvas *canvas)
+void stroke_ctx_delete_last(struct stroke_ctx *ctx)
 {
-	struct stroke_desc *last_stroke = canvas->desc_da->elems + canvas->desc_da->count-1;
+	struct stroke_desc *last = ctx->desc_da->elems + ctx->desc_da->count-1;
 
-	canvas->input_da->count = last_stroke->input_idx;
-	canvas->pfh_vertex_buf.count = last_stroke->vertex_idx;
-	canvas->desc_da->count--;
+	ctx->input_da->count = last->input_idx;
+	ctx->pfh_vertex_buf.count = last->vertex_idx;
+	ctx->desc_da->count--;
 }
 
-float canvas_stroke_dist(const struct canvas *canvas, int stroke_idx, vec2 v)
+float stroke_ctx_stroke_dist(const struct stroke_ctx *ctx, int stroke_idx, vec2 v)
 {
-	const struct stroke_desc *s = canvas->desc_da->elems + stroke_idx;
-	const point *s_inputs = canvas->input_da->elems + s->input_idx;
+	const struct stroke_desc *s = ctx->desc_da->elems + stroke_idx;
+	const point *s_inputs = ctx->input_da->elems + s->input_idx;
 	float closest_dist2 = FLT_MAX;
 	float dist2;
 	size_t i;
@@ -365,19 +376,19 @@ float canvas_stroke_dist(const struct canvas *canvas, int stroke_idx, vec2 v)
 	return closest_dist2;
 }
 
-int canvas_closest_stroke_idx(const struct canvas *canvas, vec2 v)
+int stroke_ctx_closest_stroke_idx(const struct stroke_ctx *ctx, vec2 v)
 {
 	size_t closest_stroke_idx = -1;
 	float closest_dist2 = FLT_MAX;
 	float dist2;
 	size_t i;
 
-	for (i = 0; i < canvas->desc_da->count; i++) {
-		if (canvas->desc_da->elems[i].deleted)
+	for (i = 0; i < ctx->desc_da->count; i++) {
+		if (ctx->desc_da->elems[i].deleted)
 			continue;
-		if (!rect_contains(canvas->desc_da->elems[i].bounds, v))
+		if (!rect_contains(ctx->desc_da->elems[i].bounds, v))
 			continue;
-		dist2 = canvas_stroke_dist(canvas, i, v);
+		dist2 = stroke_ctx_stroke_dist(ctx, i, v);
 		if (dist2 >= closest_dist2)
 			continue;
 		closest_dist2 = dist2;
@@ -394,7 +405,7 @@ static void cmd_hist_forget(struct cmd *cmd)
 	case CMD_STROKE_DELETE:
 		break;
 	case CMD_STROKE_CREATE:
-		free(cmd->v.stroke_data.point_da);
+		free(cmd->v.stroke.point_da);
 		break;
 	default: break;
 	}
@@ -415,11 +426,11 @@ static void cmd_hist_record(struct cmd cmd)
 
 static void cmd_stroke_create(struct cmd cmd)
 {
-	canvas_begin_stroke(cmd.v.stroke_data.canvas, cmd.v.stroke_data.colors);
-	canvas_append_points(
-		cmd.v.stroke_data.canvas,
-		cmd.v.stroke_data.point_da->elems,
-		cmd.v.stroke_data.point_da->count
+	stroke_ctx_begin(cmd.v.stroke.stroke_ctx, cmd.v.stroke.colors);
+	stroke_ctx_append_points(
+		cmd.v.stroke.stroke_ctx,
+		cmd.v.stroke.point_da->elems,
+		cmd.v.stroke.point_da->count
 	);
 }
 
@@ -437,14 +448,14 @@ static void cmd_hist_undo(void)
 
 	switch(cmd.type) {
 	case CMD_STROKE_DELETE:
-		canvas_mark_delete(
-			cmd.v.stroke_data.canvas,
-			cmd.v.stroke_data.idx,
+		stroke_ctx_mark_delete(
+			cmd.v.stroke.stroke_ctx,
+			cmd.v.stroke.idx,
 			false
 		);
 		break;
 	case CMD_STROKE_CREATE:
-		canvas_delete_last(&active_canvas);
+		stroke_ctx_delete_last(&curr_canvas.stroke_ctx);
 		break;
 	default: break;
 	}
@@ -464,9 +475,9 @@ static void cmd_hist_redo(void)
 
 	switch(cmd.type) {
 	case CMD_STROKE_DELETE:
-		canvas_mark_delete(
-			cmd.v.stroke_data.canvas,
-			cmd.v.stroke_data.idx,
+		stroke_ctx_mark_delete(
+			cmd.v.stroke.stroke_ctx,
+			cmd.v.stroke.idx,
 			true
 		);
 		break;
@@ -482,19 +493,21 @@ static void cmd_hist_redo(void)
 void drawing_mouse_down(const sapp_event *e, point pt)
 {
 	if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT || e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
-		canvas_begin_stroke(&active_canvas, *active_stroke_colors);
+		stroke_ctx_begin(&curr_canvas.stroke_ctx, *active_stroke_colors);
 		is_drawing_stroke = true;
 
 		if (cmd_curr.type != CMD_NONE)
 			puts("Warning: something ain't right. cmd_curr is not NONE.");
 		cmd_curr.type = CMD_STROKE_CREATE;
-		cmd_curr.v.stroke_data.point_da = da_point_create(DA_INITIAL_CAPACITY);
-		cmd_curr.v.stroke_data.colors = *active_stroke_colors;
-		cmd_curr.v.stroke_data.canvas = &active_canvas;
-		cmd_curr.v.stroke_data.idx = active_canvas.desc_da->count-1;
+		cmd_curr.v.stroke.stroke_ctx = &curr_canvas.stroke_ctx;
 
-		canvas_append_point(&active_canvas, pt);
-		cmd_curr.v.stroke_data.point_da = da_point_append(cmd_curr.v.stroke_data.point_da, pt);
+		cmd_curr.v.stroke.idx = curr_canvas.stroke_ctx.desc_da->count-1;
+		cmd_curr.v.stroke.colors = *active_stroke_colors;
+
+		cmd_curr.v.stroke.point_da = da_point_create(DA_INITIAL_CAPACITY);
+
+		stroke_ctx_append_point(&curr_canvas.stroke_ctx, pt);
+		cmd_curr.v.stroke.point_da = da_point_append(cmd_curr.v.stroke.point_da, pt);
 	}
 }
 
@@ -510,8 +523,8 @@ void drawing_mouse_move(point pt)
 
 		if (cmd_curr.type != CMD_STROKE_CREATE)
 			puts("Warning: something ain't right. cmd_curr is not STROKE_CREATE.");
-		canvas_append_point(&active_canvas, pt);
-		cmd_curr.v.stroke_data.point_da = da_point_append(cmd_curr.v.stroke_data.point_da, pt);
+		stroke_ctx_append_point(&curr_canvas.stroke_ctx, pt);
+		cmd_curr.v.stroke.point_da = da_point_append(cmd_curr.v.stroke.point_da, pt);
 	}
 }
 
@@ -541,7 +554,7 @@ void command_buf_run()
 		} else if (strcasecmp(str, "quit") == 0 || (str[0] == 'q')) {
 			sapp_request_quit();
 		} else if (strcasecmp(str, "print") == 0 || (str[0] == 'p')) {
-			canvas_print(&active_canvas);
+			stroke_ctx_print(&curr_canvas.stroke_ctx);
 		} else {
 			command_buf_len = snprintf(command_buf, ARRAY_SIZE(command_buf), "unknown command");
 		}
@@ -566,7 +579,7 @@ void init(void)
 {
 	stm_setup();
 
-	active_canvas = canvas_create_empty();
+	curr_canvas = canvas_create_empty();
 
 	clear_colors = COLORS_BACKGROUND;
 	stroke_colors_primary = COLORS_YELLOW;
@@ -681,20 +694,21 @@ void event_drawing(const sapp_event *e)
 
 			if (cmd_curr.type != CMD_NONE)
 				puts("Warning: Something ain't right. cmd_curr is not NONE.");
+
 			cmd_curr.type = CMD_STROKE_DELETE;
-			cmd_curr.v.stroke_data.canvas = &active_canvas;
-			cmd_curr.v.stroke_data.idx = canvas_closest_stroke_idx(&active_canvas, mouse_world);
-			if (cmd_curr.v.stroke_data.idx < 0) {
+			cmd_curr.v.stroke.stroke_ctx = &curr_canvas.stroke_ctx;
+			cmd_curr.v.stroke.idx = stroke_ctx_closest_stroke_idx(&curr_canvas.stroke_ctx, mouse_world);
+			if (cmd_curr.v.stroke.idx < 0) {
 				cmd_curr.type = CMD_NONE;
 				break;
 			}
-			canvas_mark_delete(
-				&active_canvas, 
-				cmd_curr.v.stroke_data.idx,
+			stroke_ctx_mark_delete(
+				&curr_canvas.stroke_ctx, 
+				cmd_curr.v.stroke.idx,
 				true
 			);
 			cmd_hist_record(cmd_curr);
-			printf("Deleted stroke_desc idx %d\n", cmd_curr.v.stroke_data.idx);
+			cmd_curr.type = CMD_NONE;
 		}
 
 		break;
@@ -796,7 +810,7 @@ void draw_rect(rect r)
 	nvgStroke(vg);
 }
 
-void draw_canvas(struct canvas *canvas)
+void draw_stroke_ctx(struct stroke_ctx *ctx)
 {
 	size_t i, j;
 	struct stroke_desc *s;
@@ -805,14 +819,14 @@ void draw_canvas(struct canvas *canvas)
 	color c;
 	int tmp;
 
-	for (i = 0; i < canvas->desc_da->count; i++) {
-		s = canvas->desc_da->elems + i;
+	for (i = 0; i < ctx->desc_da->count; i++) {
+		s = ctx->desc_da->elems + i;
 		if (s->deleted)
 			continue;
 		if (s->vertex_count < 3) /* shouldn't happen, a dot is 13 segs */
 			continue;
 
-		s_vertices = canvas->pfh_vertex_buf.elems + s->vertex_idx;
+		s_vertices = ctx->pfh_vertex_buf.elems + s->vertex_idx;
 		c = s->colors[theme];
 
 		nvgBeginPath(vg);
@@ -832,10 +846,10 @@ void draw_canvas(struct canvas *canvas)
 		nvgFill(vg);
 	}
 	if (draw_closest_stroke_bounds) {
-		tmp = canvas_closest_stroke_idx(canvas, mouse_world);
+		tmp = stroke_ctx_closest_stroke_idx(ctx, mouse_world);
 		if (tmp == -1)
 			return;
-		draw_rect(canvas->desc_da->elems[tmp].bounds);
+		draw_rect(ctx->desc_da->elems[tmp].bounds);
 	}
 }
 
@@ -870,7 +884,7 @@ void frame(void)
 	nvgTranslate(vg, screen_width/2, screen_height/2);
 	nvgScale(vg, zoom, -zoom);
 	nvgTranslate(vg, -camera.x, -camera.y);
-		draw_canvas(&active_canvas);
+		draw_stroke_ctx(&curr_canvas.stroke_ctx);
 	nvgRestore(vg);
 		if (input_state == INPUT_STATE_DRAWING && mouse_in_frame) {
 			nvgBeginPath(vg);
