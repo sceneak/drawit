@@ -540,6 +540,8 @@ void command_buf_run()
 			command_buf_len = snprintf(command_buf, ARRAY_SIZE(command_buf), "theme=dark");
 		} else if (strcasecmp(str, "quit") == 0 || (str[0] == 'q')) {
 			sapp_request_quit();
+		} else if (strcasecmp(str, "print") == 0 || (str[0] == 'p')) {
+			canvas_print(&active_canvas);
 		} else {
 			command_buf_len = snprintf(command_buf, ARRAY_SIZE(command_buf), "unknown command");
 		}
