@@ -65,12 +65,21 @@ struct stroke_ctx {
 	struct da_stroke_desc *desc_da;
 };
 
-struct text_canvas {
+struct text_obj {
+	struct gapbuf buf;
+};
+
+#define T struct text_obj
+#define name da_text_obj
+#include "da.t.h"
+
+struct text_ctx {
+	struct da_text_obj *text_da;
 };
 
 struct canvas {
 	struct stroke_ctx stroke_ctx;
-	struct text_canvas text_canvas;
+	struct text_ctx text_ctx;
 };
 
 enum cmd_type {
@@ -266,7 +275,21 @@ static inline void status_line_set(const char *str)
 	status_line_len = min(len, ARRAY_SIZE(status_line)-1);
 }
 
-/************ CANVAS (STROKE SOA) ************/
+struct canvas canvas_create_empty()
+{
+	struct stroke_ctx stroke_ctx = {
+		.desc_da = da_stroke_desc_create(DA_INITIAL_CAPACITY),
+		.input_da = da_point_create(DA_INITIAL_CAPACITY),
+	};
+	pfh_vec2_buf_init(&stroke_ctx.pfh_vertex_buf, DA_INITIAL_CAPACITY);
+
+	return (struct canvas) {
+		stroke_ctx
+	};
+}
+
+
+/************ CANVAS: STROKE ************/
 
 void stroke_ctx_print(const struct stroke_ctx *ctx) 
 {
@@ -284,19 +307,6 @@ void stroke_ctx_print(const struct stroke_ctx *ctx)
 		printf("  colors[%d]: (%d, %d, %d, %d)\n", theme, s->colors[theme].r, s->colors[theme].g, s->colors[theme].b, s->colors[theme].a);
 	}
 	puts("");
-}
-
-struct canvas canvas_create_empty()
-{
-	struct stroke_ctx stroke_ctx = {
-		.desc_da = da_stroke_desc_create(DA_INITIAL_CAPACITY),
-		.input_da = da_point_create(DA_INITIAL_CAPACITY),
-	};
-	pfh_vec2_buf_init(&stroke_ctx.pfh_vertex_buf, DA_INITIAL_CAPACITY);
-
-	return (struct canvas) {
-		stroke_ctx
-	};
 }
 
 void stroke_ctx_begin(struct stroke_ctx *ctx, const color *colors)
@@ -366,7 +376,7 @@ void stroke_ctx_delete_last(struct stroke_ctx *ctx)
 	ctx->desc_da->count--;
 }
 
-float stroke_ctx_stroke_dist(const struct stroke_ctx *ctx, int stroke_idx, vec2 v)
+float stroke_ctx_dist(const struct stroke_ctx *ctx, int stroke_idx, vec2 v)
 {
 	const struct stroke_desc *s = ctx->desc_da->elems + stroke_idx;
 	const point *s_inputs = ctx->input_da->elems + s->input_idx;
@@ -382,7 +392,7 @@ float stroke_ctx_stroke_dist(const struct stroke_ctx *ctx, int stroke_idx, vec2 
 	return closest_dist2;
 }
 
-int stroke_ctx_closest_stroke_idx(const struct stroke_ctx *ctx, vec2 v)
+int stroke_ctx_closest(const struct stroke_ctx *ctx, vec2 v)
 {
 	size_t closest_stroke_idx = -1;
 	float closest_dist2 = FLT_MAX;
@@ -394,7 +404,7 @@ int stroke_ctx_closest_stroke_idx(const struct stroke_ctx *ctx, vec2 v)
 			continue;
 		if (!rect_contains(ctx->desc_da->elems[i].bounds, v))
 			continue;
-		dist2 = stroke_ctx_stroke_dist(ctx, i, v);
+		dist2 = stroke_ctx_dist(ctx, i, v);
 		if (dist2 >= closest_dist2)
 			continue;
 		closest_dist2 = dist2;
@@ -402,6 +412,16 @@ int stroke_ctx_closest_stroke_idx(const struct stroke_ctx *ctx, vec2 v)
 	}
 	return closest_stroke_idx;
 }
+
+/************ CANVAS: TEXT ************/
+
+void text_ctx_print(const struct text_ctx *ctx);
+void text_ctx_insert(struct text_ctx *ctx, const color *colors);
+void text_ctx_render(struct text_ctx *ctx);
+void text_ctx_edit(struct text_ctx *ctx, point pt);
+void text_ctx_delete(struct text_ctx *ctx, int text_idx, bool deleted);
+float text_ctx_dist(const struct text_ctx *ctx, int text_idx, vec2 v);
+int text_ctx_closest_idx(const struct text_ctx *ctx, vec2 v);
 
 /************ COMMAND ************/
 
@@ -702,7 +722,7 @@ void event_drawing(const sapp_event *e)
 
 			cmd_curr.type = CMD_STROKE_DELETE;
 			cmd_curr.v.stroke.stroke_ctx = &curr_canvas.stroke_ctx;
-			cmd_curr.v.stroke.idx = stroke_ctx_closest_stroke_idx(&curr_canvas.stroke_ctx, mouse_world);
+			cmd_curr.v.stroke.idx = stroke_ctx_closest(&curr_canvas.stroke_ctx, mouse_world);
 			if (cmd_curr.v.stroke.idx < 0) {
 				cmd_curr.type = CMD_NONE;
 				break;
@@ -851,7 +871,7 @@ void draw_stroke_ctx(struct stroke_ctx *ctx)
 		nvgFill(vg);
 	}
 	if (draw_closest_stroke_bounds) {
-		tmp = stroke_ctx_closest_stroke_idx(ctx, mouse_world);
+		tmp = stroke_ctx_closest(ctx, mouse_world);
 		if (tmp == -1)
 			return;
 		draw_rect(ctx->desc_da->elems[tmp].bounds);

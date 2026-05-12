@@ -90,4 +90,13 @@ static inline void gapbuf_delete(struct gapbuf *buf)
 		buf->gap_start--;
 }
 
+static inline unsigned char gapbuf_at(const struct gapbuf *buf, size_t i)
+{
+	if (i < buf->gap_start)
+		return buf->data[i];
+	else
+		return buf->data[buf->gap_end + i - buf->gap_start];
+
+}
+
 #endif
