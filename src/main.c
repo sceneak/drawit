@@ -547,15 +547,15 @@ void command_exec(const char *str)
 {
 	if (str[0] == ':') {
 		str++;
-		if (strcasecmp(str, "light") == 0 || (str[0] == 'l')) {
+		if (drawit_strcasecmp(str, "light") == 0 || (str[0] == 'l')) {
 			theme = THEME_LIGHT;
 			status_line_set("theme=light");
-		} else if (strcasecmp(str, "dark") == 0 || (str[0] == 'd')) {
+		} else if (drawit_strcasecmp(str, "dark") == 0 || (str[0] == 'd')) {
 			theme = THEME_DARK;
 			status_line_set("theme=dark");
-		} else if (strcasecmp(str, "quit") == 0 || (str[0] == 'q')) {
+		} else if (drawit_strcasecmp(str, "quit") == 0 || (str[0] == 'q')) {
 			sapp_request_quit();
-		} else if (strcasecmp(str, "print") == 0 || (str[0] == 'p')) {
+		} else if (drawit_strcasecmp(str, "print") == 0 || (str[0] == 'p')) {
 			stroke_ctx_print(&curr_canvas.stroke_ctx);
 			status_line_set("debug print stroke ctx to stdout");
 		} else {
