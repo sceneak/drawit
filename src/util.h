@@ -20,6 +20,8 @@
 
 #define min(a, b) ( (a) < (b) ? (a) : (b) )
 
+#define GAPBUF_INITIAL_ALLOC 512
+
 static inline int drawit_strcasecmp(const char *s1, const char *s2)
 {
     while (*s1 && (tolower((unsigned char)*s1) == tolower((unsigned char)*s2))) {
@@ -33,7 +35,7 @@ struct gapbuf {
 	size_t gap_start, 
 	       gap_end,
 	       capacity;
-	unsigned char data[];
+	char data[];
 };
 
 static inline struct gapbuf *gapbuf_create(size_t capacity)
@@ -44,9 +46,14 @@ static inline struct gapbuf *gapbuf_create(size_t capacity)
 	return buf;
 }
 
+static inline size_t gapbuf_suffix_len(const struct gapbuf *buf)
+{
+	return buf->capacity - buf->gap_end;
+}
+
 static inline size_t gapbuf_len(const struct gapbuf *buf)
 {
-	return buf->gap_start + (buf->capacity - buf->gap_end);
+	return buf->gap_start + gapbuf_suffix_len(buf);
 }
 
 static inline bool gapbuf_open(struct gapbuf *buf, size_t idx)
@@ -76,12 +83,36 @@ static inline bool gapbuf_open(struct gapbuf *buf, size_t idx)
 	return true;
 }
 
-static inline bool gapbuf_insert(struct gapbuf *buf, unsigned char c)
+static inline int gapbuf_grow(struct gapbuf **buf_ptr, size_t new_capacity)
 {
-	if (buf->gap_end == buf->gap_start+1)
-		return false;
+	struct gapbuf *buf = *buf_ptr;
+	size_t new_gap_end = new_capacity - gapbuf_suffix_len(buf);
+
+	buf = realloc(buf, sizeof(struct gapbuf) + new_capacity);
+	if (!buf) {
+		fputs("Allocation failure: buy more ram lol", stderr);
+		return -1;
+	}
+	
+	if (buf->gap_end < buf->capacity)
+		memmove(buf->data + new_gap_end, buf->data + buf->gap_end, gapbuf_suffix_len(buf));
+
+	buf->capacity = new_capacity;
+	buf->gap_end = new_gap_end;
+
+	*buf_ptr = buf;
+	return 0;
+}
+
+static inline void gapbuf_insert(struct gapbuf **buf_ptr, char c)
+{
+	struct gapbuf *buf = *buf_ptr;
+
+	if (buf->gap_start >= buf->gap_end)
+		gapbuf_grow(&buf, buf->capacity*2);
 	buf->data[buf->gap_start++] = c;
-	return true;
+
+	*buf_ptr = buf;
 }
 
 static inline void gapbuf_delete(struct gapbuf *buf)
@@ -90,7 +121,7 @@ static inline void gapbuf_delete(struct gapbuf *buf)
 		buf->gap_start--;
 }
 
-static inline unsigned char gapbuf_at(const struct gapbuf *buf, size_t i)
+static inline char gapbuf_at(const struct gapbuf *buf, size_t i)
 {
 	if (i < buf->gap_start)
 		return buf->data[i];

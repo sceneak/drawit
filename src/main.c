@@ -1,7 +1,7 @@
 #define GLAD_GL_IMPLEMENTATION
 #include <glad2/gl.h>
 
-#include <sokol/sokol_app.h>
+#include <sokol/sokol_app.h> 
 #include <sokol/sokol_time.h>
 
 #define NANOVG_GL3_IMPLEMENTATION
@@ -66,7 +66,12 @@ struct stroke_ctx {
 };
 
 struct text_obj {
-	struct gapbuf buf;
+	vec2           world_pos;
+	rect           bounds;
+	int            font_handle;
+	float          font_size;
+	const color   *colors;
+	struct gapbuf *buf;
 };
 
 #define T struct text_obj
@@ -186,6 +191,9 @@ static vec2 pan_pivot_camera;
 static bool draw_closest_stroke_bounds = false;
 static bool is_drawing_stroke = false;
 static bool is_deleting_stroke = false;
+
+static struct text_obj *curr_text_obj = NULL;
+
 static struct canvas curr_canvas;
 
 static struct cmd cmd_curr;
@@ -281,11 +289,13 @@ struct canvas canvas_create_empty()
 		.desc_da = da_stroke_desc_create(DA_INITIAL_CAPACITY),
 		.input_da = da_point_create(DA_INITIAL_CAPACITY),
 	};
+	struct text_ctx text_ctx = {
+		.text_da = da_text_obj_create(DA_INITIAL_CAPACITY),
+	};
+
 	pfh_vec2_buf_init(&stroke_ctx.pfh_vertex_buf, DA_INITIAL_CAPACITY);
 
-	return (struct canvas) {
-		stroke_ctx
-	};
+	return (struct canvas) { stroke_ctx, text_ctx, };
 }
 
 
@@ -415,9 +425,45 @@ int stroke_ctx_closest(const struct stroke_ctx *ctx, vec2 v)
 
 /************ CANVAS: TEXT ************/
 
-void text_ctx_print(const struct text_ctx *ctx);
-void text_ctx_insert(struct text_ctx *ctx, const color *colors);
-void text_ctx_render(struct text_ctx *ctx);
+void text_ctx_print(const struct text_ctx *ctx)
+{
+	size_t i;
+	struct text_obj *t;
+
+	puts("text_da:");
+	for (i = 0; i < ctx->text_da->count; i++) {
+		t = ctx->text_da->elems + i;
+		printf("text[%zu]\n", i);
+		printf("   pos: (%f, %f)\n"
+		       "  font: %d\n"
+		       "  size: %f\n"
+		       "gapbuf: s(%zu) e(%zu) c(%zu)\n",
+			t->world_pos.x, t->world_pos.y,
+			t->font_handle,
+			t->font_size,
+			t->buf->gap_start, t->buf->gap_end, t->buf->capacity
+		);
+	}
+	puts("");
+	
+}
+
+struct text_obj text_obj_create(const color *colors, float font_size, vec2 pos)
+{
+	return (struct text_obj) {
+		.world_pos = pos,
+		.font_handle = font_handle,
+		.font_size = font_size,
+		.colors = colors,
+		.buf = gapbuf_create(GAPBUF_INITIAL_ALLOC),
+	};
+}
+
+void text_ctx_append(struct text_ctx *ctx)
+{
+	ctx->text_da = da_text_obj_append(ctx->text_da, text_obj_create(*active_stroke_colors, 32.0, mouse_world));
+}
+
 void text_ctx_edit(struct text_ctx *ctx, point pt);
 void text_ctx_delete(struct text_ctx *ctx, int text_idx, bool deleted);
 float text_ctx_dist(const struct text_ctx *ctx, int text_idx, vec2 v);
@@ -591,9 +637,16 @@ void input_state_set_drawing(void)
 	input_state = INPUT_STATE_DRAWING;
 	sapp_show_mouse(false);
 }
+
 void input_state_set_command(void)
 {
 	input_state = INPUT_STATE_COMMAND;
+	sapp_show_mouse(true);
+}
+
+void input_state_set_text(void)
+{
+	input_state = INPUT_STATE_TEXT;
 	sapp_show_mouse(true);
 }
 
@@ -671,6 +724,12 @@ void event_drawing(const sapp_event *e)
 	case SAPP_EVENTTYPE_CHAR: 
 		if (e->char_code == ':') {
 			input_state_set_command();
+			break;
+		}
+		if (e->char_code == 'i') {
+			text_ctx_append(&curr_canvas.text_ctx);
+			curr_text_obj = DA_LAST(curr_canvas.text_ctx.text_da);
+			input_state_set_text();
 			break;
 		}
 		break;
@@ -812,6 +871,43 @@ void event_command(const sapp_event *e)
 	}
 }
 
+void event_text(const sapp_event *e)
+{
+	struct text_obj *t = curr_text_obj;
+
+	if (input_state != INPUT_STATE_TEXT || !t)
+		return;
+
+	if (e->type == SAPP_EVENTTYPE_CHAR)
+		gapbuf_insert(&t->buf, (unsigned char)e->char_code);
+
+	if (e->type != SAPP_EVENTTYPE_KEY_DOWN)
+		return;
+
+	switch(e->key_code) {
+	case SAPP_KEYCODE_LEFT:
+		gapbuf_open(t->buf, t->buf->gap_start-1);
+		break;
+	case SAPP_KEYCODE_RIGHT:
+		gapbuf_open(t->buf, t->buf->gap_start+1);
+		break;
+	case SAPP_KEYCODE_UP:
+		break;
+	case SAPP_KEYCODE_DOWN:
+		break;
+	case SAPP_KEYCODE_BACKSPACE:
+		gapbuf_delete(t->buf);
+		break;
+	case SAPP_KEYCODE_ENTER:
+		gapbuf_insert(&t->buf, (unsigned char)'\n');
+		break;
+	case SAPP_KEYCODE_ESCAPE:
+		input_state_set_drawing();
+		break;
+	default: break;
+	}
+}
+
 void event(const sapp_event *e)
 {
 	switch(e->type) {
@@ -822,8 +918,69 @@ void event(const sapp_event *e)
 	default: break;
 	}
 
+	event_text(e);
 	event_drawing(e);
 	event_command(e);
+}
+
+/****** DRAW */
+
+void draw_text(const struct text_obj *txt)
+{
+	const float LEADING_RATIO = 1.45f;
+	const struct gapbuf *buf = txt->buf;
+	const color c = txt->colors[theme];
+
+	size_t start, i;
+	float x = 0,
+	      y = 0;
+
+	if (gapbuf_len(buf) == 0)
+		return;
+
+
+	nvgFontSize(vg, txt->font_size);
+	nvgFontFaceId(vg, txt->font_handle);
+	nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
+	nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+	
+	nvgSave(vg);
+	nvgTranslate(vg, txt->world_pos.x, txt->world_pos.y);
+	nvgScale(vg, 1, -1);
+		x = 0;
+		y = txt->font_size * LEADING_RATIO/2;
+
+		start = i = 0;
+		for (;;) {
+			if (i >= buf->capacity) {
+				nvgText(vg, x, y, buf->data + start, buf->data + i); /* NOTE: nvg already checks start != end */
+				break;
+			}
+
+			if (i == buf->gap_start && (buf->gap_start != buf->gap_end)) {
+				x = nvgText(vg, x, y, buf->data + start, buf->data + i);
+				start = i = buf->gap_end;
+				continue;
+			}
+
+			if (buf->data[i] == '\n') {
+				nvgText(vg, x, y, buf->data + start, buf->data + i);
+				start = i+1;
+
+				y += txt->font_size * LEADING_RATIO;
+				x = 0;
+			}
+			i++;
+		}
+	nvgRestore(vg);
+}
+
+void draw_text_ctx(const struct text_ctx *ctx)
+{
+	size_t i;
+	
+	for (i = 0; i < ctx->text_da->count; i++)
+		draw_text(ctx->text_da->elems + i);
 }
 
 void draw_rect(rect r)
@@ -882,6 +1039,7 @@ void draw_status_line(void)
 {
 	const float FONT_SIZE = 26.0;
 	color c = COLORS_CONTRAST[theme];
+	const vec2 coord = { 0 + FONT_SIZE, screen_height - FONT_SIZE };
 
 	if (!status_line_len)
 		return;
@@ -890,7 +1048,7 @@ void draw_status_line(void)
 	nvgFontFaceId(vg, font_handle);
 	nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
 	nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
-	nvgText(vg, 0 + FONT_SIZE, screen_height - FONT_SIZE, status_line, status_line + status_line_len);
+	nvgText(vg, coord.x, coord.y, status_line, status_line + status_line_len);
 }
 
 void frame(void) 
@@ -910,6 +1068,7 @@ void frame(void)
 	nvgScale(vg, zoom, -zoom);
 	nvgTranslate(vg, -camera.x, -camera.y);
 		draw_stroke_ctx(&curr_canvas.stroke_ctx);
+		draw_text_ctx(&curr_canvas.text_ctx);
 	nvgRestore(vg);
 		if (input_state == INPUT_STATE_DRAWING && mouse_in_frame) {
 			nvgBeginPath(vg);
