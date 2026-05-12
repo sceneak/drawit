@@ -14,6 +14,7 @@
 	#include "util.h"
 
 	#define DA_INITIAL_CAPACITY 64
+	#define DA_LAST(da) ((da)->elems + (da)->count-1)
 #endif
 
 struct name

@@ -314,21 +314,21 @@ void stroke_ctx_begin(struct stroke_ctx *ctx, const color *colors)
 
 void stroke_ctx_render_last(struct stroke_ctx *ctx)
 {
-	struct stroke_desc *last = ctx->desc_da->elems + ctx->desc_da->count-1;
+	struct stroke_desc *s = DA_LAST(ctx->desc_da);
 
-	ctx->pfh_vertex_buf.count = last->vertex_idx;
+	ctx->pfh_vertex_buf.count = s->vertex_idx;
 	pfh_get_stroke(
 		&ctx->pfh_vertex_buf,
-		(pfh_point*)ctx->input_da->elems + last->input_idx,
-		last->input_count,
+		(pfh_point*)ctx->input_da->elems + s->input_idx,
+		s->input_count,
 		&STROKE_OPTS
 	);
-	last->vertex_count = ctx->pfh_vertex_buf.count - last->vertex_idx;
+	s->vertex_count = ctx->pfh_vertex_buf.count - s->vertex_idx;
 }
 
 void stroke_ctx_append_point(struct stroke_ctx *ctx, point pt)
 {
-	struct stroke_desc *s = ctx->desc_da->elems + ctx->desc_da->count-1;
+	struct stroke_desc *s = DA_LAST(ctx->desc_da);
 	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
 	ctx->input_da = da_point_append(ctx->input_da, pt);
@@ -341,7 +341,7 @@ void stroke_ctx_append_point(struct stroke_ctx *ctx, point pt)
 void stroke_ctx_append_points(struct stroke_ctx *ctx, point pts[], int count)
 {
 	int i;
-	struct stroke_desc *s = ctx->desc_da->elems + ctx->desc_da->count-1;
+	struct stroke_desc *s = DA_LAST(ctx->desc_da);
 	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
 	ctx->input_da = da_point_append_n(ctx->input_da, pts, count);
@@ -359,10 +359,10 @@ void stroke_ctx_mark_delete(struct stroke_ctx *ctx, int stroke_idx, bool deleted
 
 void stroke_ctx_delete_last(struct stroke_ctx *ctx)
 {
-	struct stroke_desc *last = ctx->desc_da->elems + ctx->desc_da->count-1;
+	struct stroke_desc *s = DA_LAST(ctx->desc_da);
 
-	ctx->input_da->count = last->input_idx;
-	ctx->pfh_vertex_buf.count = last->vertex_idx;
+	ctx->input_da->count = s->input_idx;
+	ctx->pfh_vertex_buf.count = s->vertex_idx;
 	ctx->desc_da->count--;
 }
 
