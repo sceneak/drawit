@@ -70,6 +70,7 @@ struct text_obj {
 	rect           bounds;
 	int            font_handle;
 	float          font_size;
+	float          line_height;
 	const color   *colors;
 	struct gapbuf *buf;
 };
@@ -277,6 +278,11 @@ static inline bool rect_contains(rect r, vec2 v)
 	    && r.y0 < v.y && v.y < r.y1;
 }
 
+static inline NVGcolor color_to_NVGcolor(color c)
+{
+	return nvgRGBA(c.r, c.g, c.b, c.a);
+}
+
 static inline void status_line_set(const char *str)
 {
 	size_t len = snprintf(status_line, ARRAY_SIZE(status_line), "%s", str);
@@ -450,11 +456,15 @@ void text_ctx_print(const struct text_ctx *ctx)
 
 struct text_obj text_obj_create(const color *colors, float font_size, vec2 pos)
 {
+	const float LEADING_RATIO = 1.45f;
+
 	return (struct text_obj) {
 		.world_pos = pos,
 		.font_handle = font_handle,
 		.font_size = font_size,
+		.line_height = font_size * LEADING_RATIO,
 		.colors = colors,
+		.bounds = BOUNDS_INIT_DEFAULT,
 		.buf = gapbuf_create(GAPBUF_INITIAL_ALLOC),
 	};
 }
@@ -925,11 +935,76 @@ void event(const sapp_event *e)
 
 /****** DRAW */
 
-void draw_text(const struct text_obj *txt)
+void nvg_fontsize_ctx(NVGcontext *ctx, const struct text_obj *txt)
 {
-	const float LEADING_RATIO = 1.45f;
+	nvgFontSize(ctx, txt->font_size);
+	nvgFontFaceId(ctx, txt->font_handle);
+	nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+}
+
+vec2 get_cursor_offset(const struct text_obj *txt)
+{
+	size_t start, i;
+	float x = 0, 
+	      y = txt->line_height/2;
+
+
+	start = 0;
+	for (i = 0; i < txt->buf->gap_start; i++) {
+		if (txt->buf->data[i] == '\n') {
+			y += txt->line_height;
+			start = i;
+			i++;
+		}
+	}
+	nvg_fontsize_ctx(vg, txt);
+	x = nvgTextBounds(vg, 0, 0, txt->buf->data + start, txt->buf->data + i, NULL);
+	return (vec2) { x, y };
+}
+
+vec2 get_cursor_size(const struct text_obj *txt)
+{
+	float ascender, descender;
+	float advance;
+
+	nvg_fontsize_ctx(vg, txt);
+	nvgTextMetrics(vg, &ascender, &descender, NULL);
+
+	if (txt->buf->gap_end == txt->buf->capacity)
+		advance = nvgTextBounds(vg, 0, 0, " ", NULL, NULL);
+	else
+		advance = nvgTextBounds(vg, 0, 0, 
+			txt->buf->data + txt->buf->gap_end,
+			txt->buf->data + txt->buf->gap_end + 1, /* Assumes ASCII */
+			NULL
+		);
+
+	return (vec2) { advance, ascender - descender };
+}
+
+void draw_cursor_overlay(const struct text_obj *txt, bool local)
+{
+	vec2 offset = get_cursor_offset(txt);
+	vec2 size = get_cursor_size(txt);
+	vec2 pos = {
+		(local ? 0 : txt->world_pos.x) + offset.x,
+		(local ? 0 : txt->world_pos.y) + offset.y,
+	};
+	const char *c = txt->buf->gap_end < txt->buf->capacity ? txt->buf->data + txt->buf->gap_end : " ";
+
+	nvgFillColor(vg, color_to_NVGcolor(COLORS_CONTRAST[theme]));
+	nvgBeginPath(vg);
+	nvgRect(vg, pos.x, pos.y - size.y/2, size.x, size.y); /* offset y to middle */
+	nvgFill(vg);
+
+	nvg_fontsize_ctx(vg, txt);
+	nvgFillColor(vg, color_to_NVGcolor(COLORS_BACKGROUND[theme]));
+	nvgText(vg, pos.x, pos.y, c, c+1); /* I give up messing with GlobalCompositeOperations */
+}
+
+void draw_text(const struct text_obj *txt, bool draw_cursor)
+{
 	const struct gapbuf *buf = txt->buf;
-	const color c = txt->colors[theme];
 
 	size_t start, i;
 	float x = 0,
@@ -937,23 +1012,20 @@ void draw_text(const struct text_obj *txt)
 
 	if (gapbuf_len(buf) == 0)
 		return;
-
-
-	nvgFontSize(vg, txt->font_size);
-	nvgFontFaceId(vg, txt->font_handle);
-	nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
-	nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
+	
+	nvg_fontsize_ctx(vg, txt);
+	nvgFillColor(vg, color_to_NVGcolor(txt->colors[theme]));
 	
 	nvgSave(vg);
-	nvgTranslate(vg, txt->world_pos.x, txt->world_pos.y);
 	nvgScale(vg, 1, -1);
+	nvgTranslate(vg, txt->world_pos.x, -txt->world_pos.y);
 		x = 0;
-		y = txt->font_size * LEADING_RATIO/2;
+		y = txt->line_height/2;
 
 		start = i = 0;
 		for (;;) {
-			if (i >= buf->capacity) {
-				nvgText(vg, x, y, buf->data + start, buf->data + i); /* NOTE: nvg already checks start != end */
+			if (i >= buf->capacity) { /* NOTE: nvg already checks start != end */
+				nvgText(vg, x, y, buf->data + start, buf->data + i);
 				break;
 			}
 
@@ -967,20 +1039,27 @@ void draw_text(const struct text_obj *txt)
 				nvgText(vg, x, y, buf->data + start, buf->data + i);
 				start = i+1;
 
-				y += txt->font_size * LEADING_RATIO;
+				y += txt->line_height;
 				x = 0;
 			}
 			i++;
 		}
+		if (draw_cursor)
+			draw_cursor_overlay(txt, true);
 	nvgRestore(vg);
 }
 
 void draw_text_ctx(const struct text_ctx *ctx)
 {
 	size_t i;
-	
-	for (i = 0; i < ctx->text_da->count; i++)
-		draw_text(ctx->text_da->elems + i);
+
+	for (i = 0; i < ctx->text_da->count; i++) {
+		draw_text(
+			ctx->text_da->elems + i, 
+			input_state == INPUT_STATE_TEXT 
+			&& ctx->text_da->elems + i == curr_text_obj 
+		);
+	}
 }
 
 void draw_rect(rect r)
@@ -998,7 +1077,6 @@ void draw_stroke_ctx(struct stroke_ctx *ctx)
 	struct stroke_desc *s;
 	pfh_vec2 *s_vertices;
 	pfh_vec2 p0, p1;
-	color c;
 	int tmp;
 
 	for (i = 0; i < ctx->desc_da->count; i++) {
@@ -1009,10 +1087,9 @@ void draw_stroke_ctx(struct stroke_ctx *ctx)
 			continue;
 
 		s_vertices = ctx->pfh_vertex_buf.elems + s->vertex_idx;
-		c = s->colors[theme];
 
 		nvgBeginPath(vg);
-		nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
+		nvgFillColor(vg, color_to_NVGcolor(s->colors[theme]));
 
 		p0 = s_vertices[s->vertex_count-1];
 		p1 = s_vertices[0];
@@ -1038,7 +1115,6 @@ void draw_stroke_ctx(struct stroke_ctx *ctx)
 void draw_status_line(void)
 {
 	const float FONT_SIZE = 26.0;
-	color c = COLORS_CONTRAST[theme];
 	const vec2 coord = { 0 + FONT_SIZE, screen_height - FONT_SIZE };
 
 	if (!status_line_len)
@@ -1046,7 +1122,7 @@ void draw_status_line(void)
 
 	nvgFontSize(vg, FONT_SIZE);
 	nvgFontFaceId(vg, font_handle);
-	nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a));
+	nvgFillColor(vg, color_to_NVGcolor(COLORS_CONTRAST[theme]));
 	nvgTextAlign(vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
 	nvgText(vg, coord.x, coord.y, status_line, status_line + status_line_len);
 }
@@ -1054,7 +1130,6 @@ void draw_status_line(void)
 void frame(void) 
 {
 	color c;
-
 	dpi_scale = sapp_dpi_scale();
 
 	glViewport(0, 0, screen_width, screen_height);
@@ -1074,7 +1149,8 @@ void frame(void)
 			nvgBeginPath(vg);
 				nvgCircle(vg, roundf(mouse_screen.x), round(mouse_screen.y), zoom*STROKE_OPTS.size/1.5);
 			c = (*active_stroke_colors)[theme];
-			nvgFillColor(vg, nvgRGBA(c.r, c.g, c.b, c.a/1.5));
+			c.a /= 1.5;
+			nvgFillColor(vg, color_to_NVGcolor(c));
 			nvgFill(vg);
 		}
 		draw_status_line();
