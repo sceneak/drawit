@@ -199,6 +199,7 @@ static struct canvas curr_canvas;
 
 static struct cmd cmd_curr;
 static struct cmd_hist cmd_hist;
+static size_t cmd_save_idx = 0;
 
 static const pfh_stroke_opts STROKE_OPTS = {
 	.size = 16,
@@ -750,6 +751,22 @@ void event_drawing(const sapp_event *e)
 		}
 
 		if (e->key_code == SAPP_KEYCODE_A) {
+		}
+
+		if (e->key_code == SAPP_KEYCODE_M) {
+			cmd_save_idx = cmd_hist.cursor;
+		}
+		if (e->key_code == SAPP_KEYCODE_APOSTROPHE) {
+			while (cmd_hist.cursor != cmd_save_idx) {
+				/* DANGER */
+				/* TODO: Need to figure out forward or backwards, else infinte loop */
+				cmd_hist_undo(); 
+			}
+		}
+		if (e->key_code == SAPP_KEYCODE_EQUAL) {
+			while (cmd_hist.cursor != cmd_hist.last) {
+				cmd_hist_redo();
+			}
 		}
 
 		/* TODO: These can screw things up if cmd_curr is ongoing */
