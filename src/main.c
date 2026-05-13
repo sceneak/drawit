@@ -456,7 +456,7 @@ void text_ctx_print(const struct text_ctx *ctx)
 
 struct text_obj text_obj_create(const color *colors, float font_size, vec2 pos)
 {
-	const float LEADING_RATIO = 1.45f;
+	const float LEADING_RATIO = 1.2f;
 
 	return (struct text_obj) {
 		.world_pos = pos,
@@ -953,12 +953,12 @@ vec2 get_cursor_offset(const struct text_obj *txt)
 	for (i = 0; i < txt->buf->gap_start; i++) {
 		if (txt->buf->data[i] == '\n') {
 			y += txt->line_height;
-			start = i;
-			i++;
+			start = i+1;
 		}
 	}
 	nvg_fontsize_ctx(vg, txt);
 	x = nvgTextBounds(vg, 0, 0, txt->buf->data + start, txt->buf->data + i, NULL);
+	printf("%f %f\n", x, y);
 	return (vec2) { x, y };
 }
 
@@ -1010,9 +1010,6 @@ void draw_text(const struct text_obj *txt, bool draw_cursor)
 	float x = 0,
 	      y = 0;
 
-	if (gapbuf_len(buf) == 0)
-		return;
-	
 	nvg_fontsize_ctx(vg, txt);
 	nvgFillColor(vg, color_to_NVGcolor(txt->colors[theme]));
 	
