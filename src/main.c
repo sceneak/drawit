@@ -525,9 +525,22 @@ static void cmd_hist_redo(void)
 
 /************ DRAWING ************/
 
+void drawing_mouse_up()
+{
+	if (is_drawing_stroke) {
+		is_drawing_stroke = false;
+		cmd_hist_record(cmd_curr);
+		cmd_curr.type = CMD_NONE;
+	}
+}
+
+
 void drawing_mouse_down(const sapp_event *e, point pt)
 {
 	if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT || e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+		if (is_drawing_stroke)
+			drawing_mouse_up();
+
 		stroke_ctx_begin(&canvas.stroke_ctx, *active_colors);
 		is_drawing_stroke = true;
 
@@ -560,15 +573,6 @@ void drawing_mouse_move(point pt)
 			puts("Warning: something ain't right. cmd_curr is not STROKE_CREATE.");
 		stroke_ctx_append_point(&canvas.stroke_ctx, pt);
 		cmd_curr.v.stroke.point_da = da_point_append(cmd_curr.v.stroke.point_da, pt);
-	}
-}
-
-void drawing_mouse_up()
-{
-	if (is_drawing_stroke) {
-		is_drawing_stroke = false;
-		cmd_hist_record(cmd_curr);
-		cmd_curr.type = CMD_NONE;
 	}
 }
 
@@ -932,7 +936,6 @@ vec2 get_cursor_offset(const struct text_obj *txt)
 	}
 	nvg_fontsize_ctx(vg, txt);
 	x = nvgTextBounds(vg, 0, 0, txt->buf->data + start, txt->buf->data + i, NULL);
-	printf("%f %f\n", x, y);
 	return (vec2) { x, y };
 }
 
