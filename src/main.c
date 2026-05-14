@@ -14,24 +14,13 @@
 #include <math.h>
 #include <stdint.h>
 
+#include "types.h"
+
 #define CMD_HIST_MAX 256
 #define STROKE_BOUNDS_MARGIN 5
-#define MAX_SPEED_INCH 1200 /* will mult. by dpi_scale */
-#define STATUS_MAX 512
+#define VELOCITY_MAX_IN 1200 /* will mult. by screen_dpi_scale (inch) */
+#define STATUS_LINE_MAX 512
 
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
-#define COLOR_INIT_HEX(hex) {             \
-               .r = ((hex) >> 24) & 0xFF, \
-               .g = ((hex) >> 16) & 0xFF, \
-               .b = ((hex) >> 8) & 0xFF,  \
-               .a =  (hex) & 0xFF,        \
-        }
-#define COLOR_FROM_HEX(hex) (color) COLOR_INIT_HEX(hex)
-
-typedef struct { float x, y; } vec2;
-typedef struct { float x, y, z; } vec3;
-typedef struct { unsigned char r, g, b, a; } color;
-typedef struct { float x0, y0, x1, y1; } rect;
 
 typedef struct { vec2 coord; float pressure; } point;
 
@@ -46,9 +35,9 @@ enum theme {
 };
 
 enum object_kind {
-	OBJ_KIND_GROUP,
-	OBJ_KIND_STROKE,
-	OBJ_KIND_TEXT,
+	OBJECT_KIND_GROUP,
+	OBJECT_KIND_STROKE,
+	OBJECT_KIND_TEXT,
 };
 
 struct object_data {
@@ -126,10 +115,10 @@ struct cmd_hist {
 	struct cmd cmds[CMD_HIST_MAX];
 };
 
-enum input_state {
-	INPUT_STATE_DRAWING,
-	INPUT_STATE_COMMAND,
-	INPUT_STATE_TEXT,
+enum app_state {
+	APP_STATE_DRAW,
+	APP_STATE_COMMAND,
+	APP_STATE_TEXT,
 };
 
 
@@ -137,30 +126,17 @@ enum input_state {
 #define name da_cmd
 #include "da.t.h"
 
-#define BOUNDS_INIT_DEFAULT {    \
-                .x0 = INFINITY,  \
-                .y0 = INFINITY,  \
-                .x1 = -INFINITY, \
-                .y1 = -INFINITY, \
-        }
-
 /************ GLOBALS & STATE ************/
 
 #include "gen/inconsolata_ttf.h"
 
-static const uint8_t APP_ICON_32x32[] = {
+static const u8 APP_ICON_32x32[] = {
 #ifndef __INTELLISENSE__
 #include "gen/icon32x32.inc"
 #else
 0
 #endif
 };
-
-
-static float dpi_scale; /* needs to be cached due to sokol wackyness */
-static int screen_width, screen_height;
-static NVGcontext *vg;
-static int font_handle;
 
 static const color COLOR_DEEP_CHARCOAL = COLOR_INIT_HEX(0x121212FF);
 static const color COLOR_SKIN = COLOR_INIT_HEX(0xF5E1D2FF);
@@ -171,49 +147,48 @@ static const color COLOR_RASPBERRY = COLOR_INIT_HEX(0xD81B60FF);
 static const color COLOR_TURQUOISE = COLOR_INIT_HEX(0x40E0D0FF);
 static const color COLOR_TEAL = COLOR_INIT_HEX(0x009688FF);
 
-static enum theme theme = THEME_DARK;
-static const color *clear_colors;
-
-static vec2 mouse_screen;
-static vec2 mouse_world;
-static bool mouse_in_frame = true;
-static vec2 camera = {0, 0};
-static float zoom_frac = 0.1f;
-static float zoom = 1.0f;
-
-static enum input_state input_state = INPUT_STATE_DRAWING;
-
-
-static char status_line[STATUS_MAX];
-static size_t status_line_len = 0;
-
-
 static const color COLORS_BACKGROUND[THEME_MAX] = { COLOR_DEEP_CHARCOAL, COLOR_SKIN };
 static const color COLORS_CONTRAST[THEME_MAX] = { COLOR_SKIN, COLOR_DEEP_CHARCOAL };
 static const color COLORS_YELLOW[THEME_MAX] = { COLOR_SCENE, COLOR_MARIGOLD };
 static const color COLORS_BLUE[THEME_MAX] = { COLOR_TURQUOISE, COLOR_TEAL };
 static const color COLORS_RED[THEME_MAX] = { COLOR_HOTPINK, COLOR_RASPBERRY };
 
-static const color **active_stroke_colors;
-static const color *stroke_colors_primary;
-static const color *stroke_colors_secondary;
+
+static float screen_dpi_scale; /* needs to be cached due to sokol wackyness */
+static int screen_width, screen_height;
+
+static NVGcontext *vg;
+static const color *clear_colors;
+
+static const float FONT_SIZE_DEFAULT = 64.0;
+static int font_handle;
+
+static vec2 mouse_screen;
+static vec2 mouse_world;
+static bool mouse_in_frame = true;
+
+static const float CAMERA_ZOOM_FRAC = 0.1f;
+static vec2 camera_pos = {0, 0};
+static float camera_zoom = 1.0f;
+
+static char status_line[STATUS_LINE_MAX];
+static size_t status_line_len = 0;
+
+static const color *colors_primary;
+static const color *colors_secondary;
+static const color **active_colors;
 
 static bool is_panning = false;
 static vec2 pan_pivot_mouse;
 static vec2 pan_pivot_camera;
 
+static enum app_state app_state = APP_STATE_DRAW;
+static enum theme theme = THEME_DARK;
+
+static struct canvas canvas;
+
 static bool is_drawing_stroke = false;
 static bool is_deleting_stroke = false;
-
-static struct text_obj *text_obj_curr;
-
-static struct canvas canvas_curr;
-
-static struct object_data *object_selected;
-
-static struct cmd cmd_curr;
-static struct cmd_hist cmd_hist;
-static long cmd_save_idx = 0;
 
 static const pfh_stroke_opts STROKE_OPTS = {
 	.size = 16,
@@ -236,61 +211,22 @@ static const pfh_stroke_opts STROKE_OPTS = {
 	.last = false,
 };
 
+static struct text_obj *text_obj_curr;
+
+static struct object_data *object_selected;
+
+static struct cmd cmd_curr;
+static struct cmd_hist cmd_hist;
+static long cmd_save_idx = 0;
+
 /************ HELPERS ************/
-
-static inline vec2 vec2_all(float s)
-{
-	return (vec2){s, s};
-}
-
-static inline float vec2_dist2(vec2 from, vec2 to)
-{
-	vec2 dist = { to.x - from.x, to.y - from.y };
-	return dist.x * dist.x + dist.y * dist.y; 
-}
 
 static inline vec2 screen_to_world(vec2 screen)
 {
 	return (vec2){
-		.x = ( (screen.x - screen_width/2) / zoom) + camera.x,
-		.y = ( (screen_height/2 - screen.y) / zoom) + camera.y,
+		.x = ( (screen.x - screen_width/2) / camera_zoom) + camera_pos.x,
+		.y = ( (screen_height/2 - screen.y) / camera_zoom) + camera_pos.y,
 	};
-}
-
-static inline rect rect_create(vec2 center, vec2 extents)
-{
-	return (rect){
-		.x0 = center.x - extents.x,
-		.y0 = center.y - extents.y,
-		.x1 = center.x + extents.x,
-		.y1 = center.y + extents.y,
-	};
-}
-
-static inline rect rect_fit(rect r, vec2 v)
-{
-	return (rect){
-		.x0 = fminf(r.x0, v.x),
-		.y0 = fminf(r.y0, v.y),
-		.x1 = fmaxf(r.x1, v.x),
-		.y1 = fmaxf(r.y1, v.y),
-	};
-}
-
-static inline rect rect_fit_rect(rect r1, rect r2)
-{
-	return (rect){
-		.x0 = fminf(r1.x0, r2.x0),
-		.y0 = fminf(r1.y0, r2.y0),
-		.x1 = fmaxf(r1.x1, r2.x1),
-		.y1 = fmaxf(r1.y1, r2.y1),
-	};
-}
-
-static inline bool rect_contains(rect r, vec2 v)
-{
-	return r.x0 < v.x && v.x < r.x1
-	    && r.y0 < v.y && v.y < r.y1;
 }
 
 static inline NVGcolor color_to_NVGcolor(color c)
@@ -343,7 +279,7 @@ void stroke_ctx_print(const struct stroke_ctx *ctx)
 void stroke_ctx_begin(struct stroke_ctx *ctx, const color *colors)
 {
 	ctx->desc_da = da_stroke_desc_append(ctx->desc_da, (struct stroke_desc) { 
-		.obj.bounds   = BOUNDS_INIT_DEFAULT,
+		.obj.bounds   = BOUNDS_INIT,
 
 		.input_idx    = ctx->input_da->count, 
 		.input_count  = 0,
@@ -476,7 +412,7 @@ struct text_obj text_obj_create(const color *colors, float font_size, vec2 pos)
 
 	return (struct text_obj) {
 		.obj.pos = pos,
-		.obj.bounds = BOUNDS_INIT_DEFAULT,
+		.obj.bounds = BOUNDS_INIT,
 
 		.font_handle = font_handle,
 		.font_size = font_size,
@@ -488,7 +424,7 @@ struct text_obj text_obj_create(const color *colors, float font_size, vec2 pos)
 
 void text_ctx_append(struct text_ctx *ctx)
 {
-	ctx->text_da = da_text_obj_append(ctx->text_da, text_obj_create(*active_stroke_colors, 64.0, mouse_world));
+	ctx->text_da = da_text_obj_append(ctx->text_da, text_obj_create(*active_colors, FONT_SIZE_DEFAULT, mouse_world));
 }
 
 void text_ctx_edit(struct text_ctx *ctx, point pt);
@@ -554,7 +490,7 @@ static void cmd_hist_undo(void)
 		);
 		break;
 	case CMD_STROKE_CREATE:
-		stroke_ctx_delete_last(&canvas_curr.stroke_ctx);
+		stroke_ctx_delete_last(&canvas.stroke_ctx);
 		break;
 	default: break;
 	}
@@ -592,20 +528,20 @@ static void cmd_hist_redo(void)
 void drawing_mouse_down(const sapp_event *e, point pt)
 {
 	if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT || e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
-		stroke_ctx_begin(&canvas_curr.stroke_ctx, *active_stroke_colors);
+		stroke_ctx_begin(&canvas.stroke_ctx, *active_colors);
 		is_drawing_stroke = true;
 
 		if (cmd_curr.type != CMD_NONE)
 			puts("Warning: something ain't right. cmd_curr is not NONE.");
 		cmd_curr.type = CMD_STROKE_CREATE;
-		cmd_curr.v.stroke.stroke_ctx = &canvas_curr.stroke_ctx;
+		cmd_curr.v.stroke.stroke_ctx = &canvas.stroke_ctx;
 
-		cmd_curr.v.stroke.idx = canvas_curr.stroke_ctx.desc_da->count-1;
-		cmd_curr.v.stroke.colors = *active_stroke_colors;
+		cmd_curr.v.stroke.idx = canvas.stroke_ctx.desc_da->count-1;
+		cmd_curr.v.stroke.colors = *active_colors;
 
 		cmd_curr.v.stroke.point_da = da_point_create(DA_INITIAL_CAPACITY);
 
-		stroke_ctx_append_point(&canvas_curr.stroke_ctx, pt);
+		stroke_ctx_append_point(&canvas.stroke_ctx, pt);
 		cmd_curr.v.stroke.point_da = da_point_append(cmd_curr.v.stroke.point_da, pt);
 	}
 }
@@ -622,7 +558,7 @@ void drawing_mouse_move(point pt)
 
 		if (cmd_curr.type != CMD_STROKE_CREATE)
 			puts("Warning: something ain't right. cmd_curr is not STROKE_CREATE.");
-		stroke_ctx_append_point(&canvas_curr.stroke_ctx, pt);
+		stroke_ctx_append_point(&canvas.stroke_ctx, pt);
 		cmd_curr.v.stroke.point_da = da_point_append(cmd_curr.v.stroke.point_da, pt);
 	}
 }
@@ -649,7 +585,7 @@ void command_exec(const char *str)
 		} else if (drawit_strcasecmp(str, "quit") == 0 || (str[0] == 'q')) {
 			sapp_request_quit();
 		} else if (drawit_strcasecmp(str, "print") == 0 || (str[0] == 'p')) {
-			stroke_ctx_print(&canvas_curr.stroke_ctx);
+			stroke_ctx_print(&canvas.stroke_ctx);
 			status_line_set("debug print stroke ctx to stdout");
 		} else {
 			status_line_set("unknown command");
@@ -659,21 +595,21 @@ void command_exec(const char *str)
 
 /************ SOKOL APP ************/
 
-void input_state_set_drawing(void)
+void app_mode_set_drawing(void)
 {
-	input_state = INPUT_STATE_DRAWING;
+	app_state = APP_STATE_DRAW;
 	sapp_show_mouse(false);
 }
 
-void input_state_set_command(void)
+void app_mode_set_command(void)
 {
-	input_state = INPUT_STATE_COMMAND;
+	app_state = APP_STATE_COMMAND;
 	sapp_show_mouse(true);
 }
 
-void input_state_set_text(void)
+void app_mode_set_text(void)
 {
-	input_state = INPUT_STATE_TEXT;
+	app_state = APP_STATE_TEXT;
 	sapp_show_mouse(true);
 }
 
@@ -681,21 +617,21 @@ void init(void)
 {
 	stm_setup();
 
-	canvas_curr = canvas_create_empty();
+	canvas = canvas_create_empty();
 
 	clear_colors = COLORS_BACKGROUND;
-	stroke_colors_primary = COLORS_YELLOW;
-	stroke_colors_secondary = COLORS_RED;
-	active_stroke_colors = &stroke_colors_primary;
+	colors_primary = COLORS_YELLOW;
+	colors_secondary = COLORS_RED;
+	active_colors = &colors_primary;
 
 	screen_width = sapp_width();
 	screen_height = sapp_height();
 	gladLoaderLoadGL();
 	vg = nvgCreateGL3(NVG_ANTIALIAS | NVG_STENCIL_STROKES);
 
-	font_handle = nvgCreateFontMem(vg, "Inconsolata-Regular-Sub", (uint8_t *)inconsolata_ttf, inconsolata_ttf_len, 0);
+	font_handle = nvgCreateFontMem(vg, "Inconsolata-Regular-Sub", (u8 *)inconsolata_ttf, inconsolata_ttf_len, 0);
 
-	input_state_set_drawing();
+	app_mode_set_drawing();
 
 #ifdef _WIN32
 	#include <windows.h>
@@ -713,12 +649,12 @@ void cleanup(void)
 void event_drawing(const sapp_event *e)
 {
 	static point last_pt = { .coord = { FLT_MAX, FLT_MAX }, .pressure = .5 };
-	static uint64_t last_move = 0;
+	static u64 last_move = 0;
 
 	point pt;
 	double delta, vel;
 
-	if (input_state != INPUT_STATE_DRAWING)
+	if (app_state != APP_STATE_DRAW)
 		return;
 
 	if (status_line_len && (e->type == SAPP_EVENTTYPE_MOUSE_DOWN || e->type == SAPP_EVENTTYPE_KEY_DOWN))
@@ -738,7 +674,7 @@ void event_drawing(const sapp_event *e)
 		pt.coord = screen_to_world( (vec2){ e->mouse_x, e->mouse_y } );
 
 		vel = ( sqrtf(vec2_dist2(pt.coord, last_pt.coord)) / delta );
-		pt.pressure = 1 - min(vel / (MAX_SPEED_INCH*dpi_scale), 1);
+		pt.pressure = 1 - min(vel / (VELOCITY_MAX_IN*screen_dpi_scale), 1);
 		pt.pressure = last_pt.pressure * .75 + pt.pressure * .25; /* blend */
 
 		/* printf("raw (%f, %f), world (%f, %f), pressure (%f) \n", e->mouse_x, e->mouse_y, pt.coord.x, pt.coord.y, pt.pressure); */
@@ -750,13 +686,13 @@ void event_drawing(const sapp_event *e)
 	switch(e->type) {
 	case SAPP_EVENTTYPE_CHAR: 
 		if (e->char_code == ':') {
-			input_state_set_command();
+			app_mode_set_command();
 			break;
 		}
 		if (e->char_code == 'i') {
-			text_ctx_append(&canvas_curr.text_ctx);
-			text_obj_curr = DA_LAST(canvas_curr.text_ctx.text_da);
-			input_state_set_text();
+			text_ctx_append(&canvas.text_ctx);
+			text_obj_curr = DA_LAST(canvas.text_ctx.text_da);
+			app_mode_set_text();
 			break;
 		}
 		break;
@@ -790,27 +726,27 @@ void event_drawing(const sapp_event *e)
 		if ((e->modifiers & SAPP_MODIFIER_CTRL) && e->key_code == SAPP_KEYCODE_R)
 			cmd_hist_redo();
 
-		active_stroke_colors = &stroke_colors_primary;
+		active_colors = &colors_primary;
 		if (e->modifiers & SAPP_MODIFIER_ALT)
-			active_stroke_colors = &stroke_colors_secondary;
+			active_colors = &colors_secondary;
 
 		switch (e->key_code) {
 		case SAPP_KEYCODE_1:
-			*active_stroke_colors = COLORS_YELLOW;
+			*active_colors = COLORS_YELLOW;
 			break;
 		case SAPP_KEYCODE_2:
-			*active_stroke_colors = COLORS_RED;
+			*active_colors = COLORS_RED;
 			break;
 		case SAPP_KEYCODE_3:
-			*active_stroke_colors = COLORS_BLUE;
+			*active_colors = COLORS_BLUE;
 			break;
 		case SAPP_KEYCODE_4:
-			*active_stroke_colors = COLORS_CONTRAST;
+			*active_colors = COLORS_CONTRAST;
 			break;
 		default: break;
 		}
 
-		active_stroke_colors = &stroke_colors_primary;
+		active_colors = &colors_primary;
 		break;
 	case SAPP_EVENTTYPE_KEY_UP:
 		if (e->key_code == SAPP_KEYCODE_X) {
@@ -822,14 +758,14 @@ void event_drawing(const sapp_event *e)
 				puts("Warning: Something ain't right. cmd_curr is not NONE.");
 
 			cmd_curr.type = CMD_STROKE_DELETE;
-			cmd_curr.v.stroke.stroke_ctx = &canvas_curr.stroke_ctx;
-			cmd_curr.v.stroke.idx = stroke_ctx_closest(&canvas_curr.stroke_ctx, mouse_world);
+			cmd_curr.v.stroke.stroke_ctx = &canvas.stroke_ctx;
+			cmd_curr.v.stroke.idx = stroke_ctx_closest(&canvas.stroke_ctx, mouse_world);
 			if (cmd_curr.v.stroke.idx < 0) {
 				cmd_curr.type = CMD_NONE;
 				break;
 			}
 			stroke_ctx_mark_delete(
-				&canvas_curr.stroke_ctx, 
+				&canvas.stroke_ctx, 
 				cmd_curr.v.stroke.idx,
 				true
 			);
@@ -844,8 +780,8 @@ void event_drawing(const sapp_event *e)
 		mouse_world = screen_to_world(mouse_screen);
 
 		if (is_panning) {
-			camera.x = pan_pivot_camera.x + (pan_pivot_mouse.x - mouse_screen.x)/zoom;
-			camera.y = pan_pivot_camera.y + (mouse_screen.y - pan_pivot_mouse.y)/zoom;
+			camera_pos.x = pan_pivot_camera.x + (pan_pivot_mouse.x - mouse_screen.x)/camera_zoom;
+			camera_pos.y = pan_pivot_camera.y + (mouse_screen.y - pan_pivot_mouse.y)/camera_zoom;
 		}
 		drawing_mouse_move(pt);
 		break;
@@ -853,7 +789,7 @@ void event_drawing(const sapp_event *e)
 		if (e->mouse_button == SAPP_MOUSEBUTTON_MIDDLE) {
 			is_panning = true;
 			pan_pivot_mouse = mouse_screen;
-			pan_pivot_camera = camera;
+			pan_pivot_camera = camera_pos;
 		}
 
 		if (e->modifiers & SAPP_MODIFIER_ALT) {
@@ -862,9 +798,9 @@ void event_drawing(const sapp_event *e)
 			}
 		} else {
 			if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT)
-				active_stroke_colors = &stroke_colors_primary;
+				active_colors = &colors_primary;
 			else if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT)
-				active_stroke_colors = &stroke_colors_secondary;
+				active_colors = &colors_secondary;
 
 			drawing_mouse_down(e, pt);
 		}
@@ -874,12 +810,12 @@ void event_drawing(const sapp_event *e)
 		drawing_mouse_up();
 		break;
 	case SAPP_EVENTTYPE_MOUSE_SCROLL:
-		float ratio = (1 + zoom_frac * e->scroll_y);
-		zoom *= ratio;
+		float ratio = (1 + CAMERA_ZOOM_FRAC * e->scroll_y);
+		camera_zoom *= ratio;
 		
 		// (World - OldCamera) * OldZoom = (World - NewCamera) * NewZoom
-		camera.x = mouse_world.x - (mouse_world.x - camera.x) / ratio;
-		camera.y = mouse_world.y - (mouse_world.y - camera.y) / ratio;
+		camera_pos.x = mouse_world.x - (mouse_world.x - camera_pos.x) / ratio;
+		camera_pos.y = mouse_world.y - (mouse_world.y - camera_pos.y) / ratio;
 		break;
 	default: break;
 	}
@@ -888,10 +824,10 @@ void event_drawing(const sapp_event *e)
 /* Note event_command relies on event_drawing to zero out status line when entering state */
 void event_command(const sapp_event *e)
 {
-	if (input_state != INPUT_STATE_COMMAND)
+	if (app_state != APP_STATE_COMMAND)
 		return;
 
-	if (e->type == SAPP_EVENTTYPE_CHAR && status_line_len < STATUS_MAX-1) {
+	if (e->type == SAPP_EVENTTYPE_CHAR && status_line_len < STATUS_LINE_MAX-1) {
 		status_line[status_line_len++] = e->char_code;
 		return;
 	}
@@ -909,10 +845,10 @@ void event_command(const sapp_event *e)
 		status_line[status_line_len] = '\0';
 		command_exec(status_line); /* status line is reused to write results. don't zero */
 
-		input_state_set_drawing();
+		app_mode_set_drawing();
 		break;
 	case SAPP_KEYCODE_ESCAPE:
-		input_state_set_drawing();
+		app_mode_set_drawing();
 		status_line_len = 0;
 		break;
 	default: break;
@@ -923,7 +859,7 @@ void event_text(const sapp_event *e)
 {
 	struct text_obj *t = text_obj_curr;
 
-	if (input_state != INPUT_STATE_TEXT || !t)
+	if (app_state != APP_STATE_TEXT || !t)
 		return;
 
 	if (e->type == SAPP_EVENTTYPE_CHAR)
@@ -950,7 +886,7 @@ void event_text(const sapp_event *e)
 		gapbuf_insert(&t->buf, (unsigned char)'\n');
 		break;
 	case SAPP_KEYCODE_ESCAPE:
-		input_state_set_drawing();
+		app_mode_set_drawing();
 		break;
 	default: break;
 	}
@@ -1091,7 +1027,7 @@ void draw_text_ctx(const struct text_ctx *ctx)
 	for (i = 0; i < ctx->text_da->count; i++) {
 		draw_text(
 			ctx->text_da->elems + i, 
-			input_state == INPUT_STATE_TEXT 
+			app_state == APP_STATE_TEXT 
 			&& ctx->text_da->elems + i == text_obj_curr 
 		);
 	}
@@ -1165,25 +1101,25 @@ void draw_status_line(void)
 void frame(void) 
 {
 	color c;
-	dpi_scale = sapp_dpi_scale();
+	screen_dpi_scale = sapp_dpi_scale();
 
 	glViewport(0, 0, screen_width, screen_height);
 	glClearColor(clear_colors[theme].r/255.0f, clear_colors[theme].g/255.0f, clear_colors[theme].b/255.0f, clear_colors[theme].a/255.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
-	nvgBeginFrame(vg, screen_width/dpi_scale, screen_height/dpi_scale, dpi_scale);
+	nvgBeginFrame(vg, screen_width/screen_dpi_scale, screen_height/screen_dpi_scale, screen_dpi_scale);
 
 	nvgSave(vg);
 	nvgTranslate(vg, screen_width/2, screen_height/2);
-	nvgScale(vg, zoom, -zoom);
-	nvgTranslate(vg, -camera.x, -camera.y);
-		draw_stroke_ctx(&canvas_curr.stroke_ctx);
-		draw_text_ctx(&canvas_curr.text_ctx);
+	nvgScale(vg, camera_zoom, -camera_zoom);
+	nvgTranslate(vg, -camera_pos.x, -camera_pos.y);
+		draw_stroke_ctx(&canvas.stroke_ctx);
+		draw_text_ctx(&canvas.text_ctx);
 	nvgRestore(vg);
-		if (input_state == INPUT_STATE_DRAWING && mouse_in_frame) {
+		if (app_state == APP_STATE_DRAW && mouse_in_frame) {
 			nvgBeginPath(vg);
-				nvgCircle(vg, roundf(mouse_screen.x), round(mouse_screen.y), zoom*STROKE_OPTS.size/1.5);
-			c = (*active_stroke_colors)[theme];
+				nvgCircle(vg, roundf(mouse_screen.x), round(mouse_screen.y), camera_zoom*STROKE_OPTS.size/1.5);
+			c = (*active_colors)[theme];
 			c.a /= 1.5;
 			nvgFillColor(vg, color_to_NVGcolor(c));
 			nvgFill(vg);
