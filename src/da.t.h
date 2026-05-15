@@ -59,14 +59,14 @@ NO_DISCARD static inline struct name *CAT(name, _append_empty)(struct name *da, 
 	return da;
 }
 
-NO_DISCARD static inline struct name *CAT(name, _append)(struct name *da, const T elem)
+NO_DISCARD static inline struct name *CAT(name, _append)(struct name *da, T elem)
 {
 	da = CAT(name, _append_empty)(da, 1);
 	da->elems[da->count-1] = elem;
 	return da;
 }
 
-NO_DISCARD static inline struct name *CAT(name, _append_n)(struct name *da, const T elem[], int n)
+NO_DISCARD static inline struct name *CAT(name, _append_n)(struct name *da, T const elem[], int n)
 {
 	int i;
 	da = CAT(name, _append_empty)(da, n);

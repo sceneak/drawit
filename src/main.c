@@ -20,6 +20,7 @@
 #define STROKE_BOUNDS_MARGIN 5
 #define VELOCITY_MAX_IN 1200 /* will mult. by screen_dpi_scale (inch) */
 #define STATUS_LINE_MAX 512
+#define POINT_INIT { .coord = { FLT_MAX, FLT_MAX }, .pressure = .5 }
 
 
 typedef struct { vec2 coord; float pressure; } point;
@@ -45,6 +46,10 @@ struct object_data {
 	rect             bounds;
 	enum object_kind kind;
 };
+
+#define T struct object_data *
+#define name da_object_ptr
+#include "da.t.h"
 
 struct stroke_desc {
 	struct object_data obj;
@@ -101,7 +106,7 @@ struct cmd {
 	union {
 		struct cmd_stroke_data {
 			int idx;
-			struct stroke_ctx *stroke_ctx;
+			struct stroke_ctx *ctx;
 			struct da_point *point_da; 
 			const color *colors;
 		} stroke;
@@ -115,10 +120,10 @@ struct cmd_hist {
 	struct cmd cmds[CMD_HIST_MAX];
 };
 
-enum app_state {
-	APP_STATE_DRAW,
-	APP_STATE_COMMAND,
-	APP_STATE_TEXT,
+enum mode {
+	MODE_DRAW,
+	MODE_COMMAND,
+	MODE_TEXT,
 };
 
 
@@ -128,15 +133,15 @@ enum app_state {
 
 /************ GLOBALS & STATE ************/
 
-#include "gen/inconsolata_ttf.h"
-
+/* CONSTANTS */
 static const u8 APP_ICON_32x32[] = {
-#ifndef __INTELLISENSE__
-#include "gen/icon32x32.inc"
-#else
-0
-#endif
+	#ifndef __INTELLISENSE__
+		#include "gen/icon32x32.inc"
+	#else
+		0
+	#endif
 };
+#include "gen/inconsolata_ttf.h"
 
 static const color COLOR_DEEP_CHARCOAL = COLOR_INIT_HEX(0x121212FF);
 static const color COLOR_SKIN = COLOR_INIT_HEX(0xF5E1D2FF);
@@ -153,7 +158,7 @@ static const color COLORS_YELLOW[THEME_MAX] = { COLOR_SCENE, COLOR_MARIGOLD };
 static const color COLORS_BLUE[THEME_MAX] = { COLOR_TURQUOISE, COLOR_TEAL };
 static const color COLORS_RED[THEME_MAX] = { COLOR_HOTPINK, COLOR_RASPBERRY };
 
-
+/* NVG & SCREEN  */
 static float screen_dpi_scale; /* needs to be cached due to sokol wackyness */
 static int screen_width, screen_height;
 
@@ -163,32 +168,35 @@ static const color *clear_colors;
 static const float FONT_SIZE_DEFAULT = 64.0;
 static int font_handle;
 
-static vec2 mouse_screen;
-static vec2 mouse_world;
-static bool mouse_in_frame = true;
-
-static const float CAMERA_ZOOM_FRAC = 0.1f;
-static vec2 camera_pos = {0, 0};
-static float camera_zoom = 1.0f;
+/* APP */
+static enum mode mode = MODE_DRAW;
+static enum theme theme = THEME_DARK;
 
 static char status_line[STATUS_LINE_MAX];
 static size_t status_line_len = 0;
+
+/* MODE DRAW  */
+static struct canvas canvas;
+
+static bool is_drawing_stroke = false;
+static bool is_deleting_stroke = false;
 
 static const color *colors_primary;
 static const color *colors_secondary;
 static const color **active_colors;
 
+static vec2 mouse_screen;
+static vec2 mouse_world;
+static bool mouse_in_frame = true;
+static point mouse_point;
+
+static const float CAMERA_ZOOM_FRAC = 0.1f;
+static vec2 camera_pos = {0, 0};
+static float camera_zoom = 1.0f;
+
 static bool is_panning = false;
 static vec2 pan_pivot_mouse;
 static vec2 pan_pivot_camera;
-
-static enum app_state app_state = APP_STATE_DRAW;
-static enum theme theme = THEME_DARK;
-
-static struct canvas canvas;
-
-static bool is_drawing_stroke = false;
-static bool is_deleting_stroke = false;
 
 static const pfh_stroke_opts STROKE_OPTS = {
 	.size = 16,
@@ -211,13 +219,15 @@ static const pfh_stroke_opts STROKE_OPTS = {
 	.last = false,
 };
 
-static struct text_obj *text_obj_curr;
+static struct text_obj *text_in_edit;
 
-static struct object_data *object_selected;
+static struct da_object_ptr *selected_objs = NULL;
 
+/* CMD_HIST */
 static struct cmd cmd_curr;
 static struct cmd_hist cmd_hist;
 static long cmd_save_idx = 0;
+
 
 /************ HELPERS ************/
 
@@ -304,23 +314,24 @@ void stroke_ctx_render_last(struct stroke_ctx *ctx)
 	s->vertex_count = ctx->pfh_vertex_buf.count - s->vertex_idx;
 }
 
-void stroke_ctx_append_point(struct stroke_ctx *ctx, point pt)
+void stroke_ctx_append_point(struct stroke_ctx *ctx, point mouse_point)
 {
 	struct stroke_desc *s = DA_LAST(ctx->desc_da);
 	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
-	ctx->input_da = da_point_append(ctx->input_da, pt);
+	ctx->input_da = da_point_append(ctx->input_da, mouse_point);
 	s->input_count++;
-	s->obj.bounds = rect_fit_rect(s->obj.bounds, rect_create(pt.coord, PT_EXTENTS));
+	s->obj.bounds = rect_fit_rect(s->obj.bounds, rect_create(mouse_point.coord, PT_EXTENTS));
 
 	stroke_ctx_render_last(ctx);
 }
 
-void stroke_ctx_append_points(struct stroke_ctx *ctx, point pts[], int count)
+void stroke_ctx_append_points(struct stroke_ctx *ctx, const point pts[], int count)
 {
-	int i;
-	struct stroke_desc *s = DA_LAST(ctx->desc_da);
 	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
+
+	struct stroke_desc *s = DA_LAST(ctx->desc_da);
+	int i;
 
 	ctx->input_da = da_point_append_n(ctx->input_da, pts, count);
 	s->input_count += count;
@@ -422,21 +433,21 @@ struct text_obj text_obj_create(const color *colors, float font_size, vec2 pos)
 	};
 }
 
-void text_ctx_append(struct text_ctx *ctx)
+static inline void text_ctx_append(struct text_ctx *ctx, const color *colors, float font_size, vec2 pos)
 {
-	ctx->text_da = da_text_obj_append(ctx->text_da, text_obj_create(*active_colors, FONT_SIZE_DEFAULT, mouse_world));
+	ctx->text_da = da_text_obj_append(ctx->text_da, text_obj_create(colors, font_size, pos));
 }
 
-void text_ctx_edit(struct text_ctx *ctx, point pt);
+void text_ctx_edit(struct text_ctx *ctx, point mouse_point);
 void text_ctx_delete(struct text_ctx *ctx, int text_idx, bool deleted);
 float text_ctx_dist(const struct text_ctx *ctx, int text_idx, vec2 v);
 int text_ctx_closest_idx(const struct text_ctx *ctx, vec2 v);
 
-/************ COMMAND ************/
+/************ CMD ************/
 
-static void cmd_hist_forget(struct cmd *cmd)
+void cmd_forget(struct cmd *cmd)
 {
-	switch(cmd->type) {
+	switch (cmd->type) {
 	case CMD_STROKE_DELETE:
 		break;
 	case CMD_STROKE_CREATE:
@@ -447,134 +458,102 @@ static void cmd_hist_forget(struct cmd *cmd)
 	cmd->type = CMD_NONE;
 }
 
-static void cmd_hist_record(struct cmd cmd)
+void cmd_undo(struct cmd c)
 {
-	cmd_hist.cursor = RINGBUF_INCR(cmd_hist.cursor, ARRAY_SIZE(cmd_hist.cmds), 1);
-	cmd_hist_forget(cmd_hist.cmds + cmd_hist.cursor);
-	cmd_hist.cmds[cmd_hist.cursor] = cmd;
-
-	cmd_hist.last = cmd_hist.cursor;
-
-	if (cmd_hist.before_first == cmd_hist.last)
-		cmd_hist.before_first = RINGBUF_INCR(cmd_hist.before_first, ARRAY_SIZE(cmd_hist.cmds), 1);
-}
-
-static void cmd_stroke_create(struct cmd cmd)
-{
-	stroke_ctx_begin(cmd.v.stroke.stroke_ctx, cmd.v.stroke.colors);
-	stroke_ctx_append_points(
-		cmd.v.stroke.stroke_ctx,
-		cmd.v.stroke.point_da->elems,
-		cmd.v.stroke.point_da->count
-	);
-}
-
-static void cmd_hist_undo(void)
-{
-	struct cmd cmd;
-
-	if (cmd_hist.cursor == cmd_hist.before_first) {
-		status_line_set("Already at oldest history");
-		return;
-	}
-
-	cmd = cmd_hist.cmds[cmd_hist.cursor];
-	cmd_hist.cursor = RINGBUF_DECR(cmd_hist.cursor, ARRAY_SIZE(cmd_hist.cmds), 1);
-
-	switch(cmd.type) {
+	switch (c.type) {
 	case CMD_STROKE_DELETE:
-		stroke_ctx_mark_delete(
-			cmd.v.stroke.stroke_ctx,
-			cmd.v.stroke.idx,
-			false
-		);
+		stroke_ctx_mark_delete(c.v.stroke.ctx, c.v.stroke.idx, false);
 		break;
 	case CMD_STROKE_CREATE:
-		stroke_ctx_delete_last(&canvas.stroke_ctx);
+		stroke_ctx_delete_last(c.v.stroke.ctx);
 		break;
 	default: break;
 	}
 }
 
-static void cmd_hist_redo(void)
+void cmd_redo(struct cmd c)
 {
-	struct cmd cmd;
-
-	if (cmd_hist.cursor == cmd_hist.last) {
-		status_line_set("Already at newest change");
-		return;
-	}
-
-	cmd_hist.cursor = RINGBUF_INCR(cmd_hist.cursor, ARRAY_SIZE(cmd_hist.cmds), 1);
-	cmd = cmd_hist.cmds[cmd_hist.cursor];
-
-	switch(cmd.type) {
+	switch (c.type) {
 	case CMD_STROKE_DELETE:
 		stroke_ctx_mark_delete(
-			cmd.v.stroke.stroke_ctx,
-			cmd.v.stroke.idx,
+			c.v.stroke.ctx,
+			c.v.stroke.idx,
 			true
 		);
 		break;
 	case CMD_STROKE_CREATE:
-		cmd_stroke_create(cmd);
+		stroke_ctx_begin(c.v.stroke.ctx, c.v.stroke.colors);
+		stroke_ctx_append_points(
+			c.v.stroke.ctx,
+			c.v.stroke.point_da->elems,
+			c.v.stroke.point_da->count
+		);
 		break;
 	default: break;
 	}
 }
 
-/************ DRAWING ************/
 
-void drawing_mouse_up()
+/************ CMD_HIST ************/
+
+void cmd_hist_record(struct cmd_hist *hist, struct cmd cmd)
 {
-	if (is_drawing_stroke) {
-		is_drawing_stroke = false;
-		cmd_hist_record(cmd_curr);
-		cmd_curr.type = CMD_NONE;
+	hist->cursor = RINGBUF_INCR(hist->cursor, ARRAY_SIZE(hist->cmds), 1);
+
+	cmd_forget(hist->cmds + hist->cursor);
+	hist->cmds[hist->cursor] = cmd;
+
+	hist->last = hist->cursor;
+
+	if (hist->before_first == hist->last)
+		hist->before_first = RINGBUF_INCR(hist->before_first, ARRAY_SIZE(hist->cmds), 1);
+}
+
+void cmd_hist_undo(struct cmd_hist *hist)
+{
+	if (hist->cursor == hist->before_first) {
+		status_line_set("Already at oldest history");
+		return;
 	}
+
+	cmd_undo(hist->cmds[hist->cursor]);
+	hist->cursor = RINGBUF_DECR(hist->cursor, ARRAY_SIZE(hist->cmds), 1);
+}
+
+static void cmd_hist_redo(struct cmd_hist *hist)
+{
+	if (hist->cursor == hist->last) {
+		status_line_set("Already at newest change");
+		return;
+	}
+
+	hist->cursor = RINGBUF_INCR(hist->cursor, ARRAY_SIZE(hist->cmds), 1);
+	cmd_redo(hist->cmds[hist->cursor]);
 }
 
 
-void drawing_mouse_down(const sapp_event *e, point pt)
+/************ EVENT MODE HANDLING  ************/
+
+void mode_switch_drawing(void)
 {
-	if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT || e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
-		if (is_drawing_stroke)
-			drawing_mouse_up();
-
-		stroke_ctx_begin(&canvas.stroke_ctx, *active_colors);
-		is_drawing_stroke = true;
-
-		if (cmd_curr.type != CMD_NONE)
-			puts("Warning: something ain't right. cmd_curr is not NONE.");
-		cmd_curr.type = CMD_STROKE_CREATE;
-		cmd_curr.v.stroke.stroke_ctx = &canvas.stroke_ctx;
-
-		cmd_curr.v.stroke.idx = canvas.stroke_ctx.desc_da->count-1;
-		cmd_curr.v.stroke.colors = *active_colors;
-
-		cmd_curr.v.stroke.point_da = da_point_create(DA_INITIAL_CAPACITY);
-
-		stroke_ctx_append_point(&canvas.stroke_ctx, pt);
-		cmd_curr.v.stroke.point_da = da_point_append(cmd_curr.v.stroke.point_da, pt);
-	}
+	mode = MODE_DRAW;
+	sapp_show_mouse(false);
 }
 
-void drawing_mouse_move(point pt)
+void mode_switch_command(void)
 {
-	const int MIN_PX = 2;
-	static point last_pt = { .coord = { FLT_MAX, FLT_MAX } };
-
-	if (is_drawing_stroke) {
-		if (vec2_dist2(pt.coord, last_pt.coord) < MIN_PX*MIN_PX)
-			return;
-		last_pt = pt;
-
-		if (cmd_curr.type != CMD_STROKE_CREATE)
-			puts("Warning: something ain't right. cmd_curr is not STROKE_CREATE.");
-		stroke_ctx_append_point(&canvas.stroke_ctx, pt);
-		cmd_curr.v.stroke.point_da = da_point_append(cmd_curr.v.stroke.point_da, pt);
-	}
+	mode = MODE_COMMAND;
+	status_line_set(":");
+	sapp_show_mouse(true);
 }
+
+void mode_switch_text(void)
+{
+	mode = MODE_TEXT;
+	sapp_show_mouse(true);
+}
+
+/* MODE_COMMAND */
 
 void command_exec(const char *str)
 {
@@ -597,73 +576,111 @@ void command_exec(const char *str)
 	}
 }
 
-/************ SOKOL APP ************/
-
-void app_mode_set_drawing(void)
+void command_mode_event(const sapp_event *e)
 {
-	app_state = APP_STATE_DRAW;
-	sapp_show_mouse(false);
-}
-
-void app_mode_set_command(void)
-{
-	app_state = APP_STATE_COMMAND;
-	sapp_show_mouse(true);
-}
-
-void app_mode_set_text(void)
-{
-	app_state = APP_STATE_TEXT;
-	sapp_show_mouse(true);
-}
-
-void init(void) 
-{
-	stm_setup();
-
-	canvas = canvas_create_empty();
-
-	clear_colors = COLORS_BACKGROUND;
-	colors_primary = COLORS_YELLOW;
-	colors_secondary = COLORS_RED;
-	active_colors = &colors_primary;
-
-	screen_width = sapp_width();
-	screen_height = sapp_height();
-	gladLoaderLoadGL();
-	vg = nvgCreateGL3(NVG_ANTIALIAS | NVG_STENCIL_STROKES);
-
-	font_handle = nvgCreateFontMem(vg, "Inconsolata-Regular-Sub", (u8 *)inconsolata_ttf, inconsolata_ttf_len, 0);
-
-	app_mode_set_drawing();
-
-#ifdef _WIN32
-	#include <windows.h>
-	HWND hwnd = (HWND)sapp_win32_get_hwnd();
-	ShowWindow(hwnd, SW_MAXIMIZE);
-#endif
-}
-
-void cleanup(void)
-{
-	gladLoaderUnloadGL();
-	nvgDeleteGL3(vg);
-}
-
-void event_drawing(const sapp_event *e)
-{
-	static point last_pt = { .coord = { FLT_MAX, FLT_MAX }, .pressure = .5 };
-	static u64 last_move = 0;
-
-	point pt;
-	double delta, vel;
-
-	if (app_state != APP_STATE_DRAW)
+	if (mode != MODE_COMMAND)
 		return;
 
-	if (status_line_len && (e->type == SAPP_EVENTTYPE_MOUSE_DOWN || e->type == SAPP_EVENTTYPE_KEY_DOWN))
-		status_line_len = 0;
+	if (e->type == SAPP_EVENTTYPE_CHAR && status_line_len < STATUS_LINE_MAX-1) {
+		status_line[status_line_len++] = e->char_code;
+		return;
+	}
+	if (e->type != SAPP_EVENTTYPE_KEY_DOWN)
+		return;
 
+	switch (e->key_code) {
+	case SAPP_KEYCODE_BACKSPACE:
+		if (status_line_len <= 1)
+			break;
+
+		status_line_len--;
+		break;
+	case SAPP_KEYCODE_ENTER:
+		status_line[status_line_len] = '\0';
+		command_exec(status_line); /* status line is reused to write results. don't zero */
+
+		mode_switch_drawing();
+		break;
+	case SAPP_KEYCODE_ESCAPE:
+		mode_switch_drawing();
+		status_line_len = 0;
+		break;
+	default: break;
+	}
+}
+
+/* MODE_TEXT */
+
+void text_mode_event(const sapp_event *e)
+{
+	struct text_obj *t = text_in_edit;
+
+	if (mode != MODE_TEXT || !t)
+		return;
+
+	if (e->type == SAPP_EVENTTYPE_CHAR)
+		gapbuf_insert(&t->buf, (unsigned char)e->char_code);
+
+	if (e->type != SAPP_EVENTTYPE_KEY_DOWN)
+		return;
+
+	switch (e->key_code) {
+	case SAPP_KEYCODE_LEFT:
+		gapbuf_open(t->buf, t->buf->gap_start-1);
+		break;
+	case SAPP_KEYCODE_RIGHT:
+		gapbuf_open(t->buf, t->buf->gap_start+1);
+		break;
+	case SAPP_KEYCODE_UP:
+		break;
+	case SAPP_KEYCODE_DOWN:
+		break;
+	case SAPP_KEYCODE_BACKSPACE:
+		gapbuf_delete(t->buf);
+		break;
+	case SAPP_KEYCODE_ENTER:
+		gapbuf_insert(&t->buf, (unsigned char)'\n');
+		break;
+	case SAPP_KEYCODE_ESCAPE:
+		mode_switch_drawing();
+		break;
+	default: break;
+	}
+}
+
+/* MODE_DRAW */
+
+void draw_mode_event_mouse(const sapp_event *e)
+{
+	static u64 last_move = 0;
+	double delta, vel;
+
+	static point last_pt = POINT_INIT;
+
+	switch (e->type) {
+	case SAPP_EVENTTYPE_MOUSE_MOVE:
+		mouse_screen.x = e->mouse_x;
+		mouse_screen.y = e->mouse_y;
+		mouse_world = screen_to_world(mouse_screen);
+		/* fall through */
+	case SAPP_EVENTTYPE_MOUSE_DOWN:
+	case SAPP_EVENTTYPE_MOUSE_UP:
+		delta = stm_sec(stm_laptime(&last_move));
+
+		mouse_point.coord = mouse_world;
+		vel = ( sqrtf(vec2_dist2(mouse_point.coord, last_pt.coord)) / delta );
+
+		mouse_point.pressure = 1 - min(vel / (VELOCITY_MAX_IN*screen_dpi_scale), 1);
+		mouse_point.pressure = last_pt.pressure * .75 + mouse_point.pressure * .25; /* blend */
+
+		last_pt = mouse_point;
+		break;
+	default: break;
+	}
+}
+
+void draw_mode_event_camera(const sapp_event *e)
+{
 	switch(e->type) {
 	case SAPP_EVENTTYPE_MOUSE_ENTER:
 		mouse_in_frame = true;
@@ -672,63 +689,160 @@ void event_drawing(const sapp_event *e)
 		mouse_in_frame = false;
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
-	case SAPP_EVENTTYPE_MOUSE_DOWN:
+		mouse_screen.x = e->mouse_x;
+		mouse_screen.y = e->mouse_y;
+		mouse_world = screen_to_world(mouse_screen);
+
+		if (is_panning) {
+			camera_pos.x = pan_pivot_camera.x + (pan_pivot_mouse.x - mouse_screen.x)/camera_zoom;
+			camera_pos.y = pan_pivot_camera.y + (mouse_screen.y - pan_pivot_mouse.y)/camera_zoom;
+		}
+		break;
 	case SAPP_EVENTTYPE_MOUSE_UP:
-		delta = stm_sec(stm_laptime(&last_move));
-		pt.coord = screen_to_world( (vec2){ e->mouse_x, e->mouse_y } );
+		is_panning = is_panning && e->mouse_button != SAPP_MOUSEBUTTON_MIDDLE;
+		break;
+	case SAPP_EVENTTYPE_MOUSE_DOWN:
+		if (e->mouse_button == SAPP_MOUSEBUTTON_MIDDLE) {
+			is_panning = true;
+			pan_pivot_mouse = mouse_screen;
+			pan_pivot_camera = camera_pos;
+		}
+		break;
+	case SAPP_EVENTTYPE_MOUSE_SCROLL:
+		float ratio = (1 + CAMERA_ZOOM_FRAC * e->scroll_y);
+		camera_zoom *= ratio;
+		
+		/* (World - OldCamera) * OldZoom = (World - NewCamera) * NewZoom */
+		camera_pos.x = mouse_world.x - (mouse_world.x - camera_pos.x) / ratio;
+		camera_pos.y = mouse_world.y - (mouse_world.y - camera_pos.y) / ratio;
+		break;
+	default: break;
+	}
+}
 
-		vel = ( sqrtf(vec2_dist2(pt.coord, last_pt.coord)) / delta );
-		pt.pressure = 1 - min(vel / (VELOCITY_MAX_IN*screen_dpi_scale), 1);
-		pt.pressure = last_pt.pressure * .75 + pt.pressure * .25; /* blend */
+void draw_mode_stroke_begin(struct stroke_ctx *ctx, point pt, const color *colors, struct cmd *cmd)
+{
+	stroke_ctx_begin(ctx, colors);
+	stroke_ctx_append_point(ctx, pt);
 
-		/* printf("raw (%f, %f), world (%f, %f), pressure (%f) \n", e->mouse_x, e->mouse_y, pt.coord.x, pt.coord.y, pt.pressure); */
-		last_pt = pt;
+
+	if (cmd->type != CMD_NONE)
+		puts("Warning: something ain't right during stroke begin. cmd->is not NONE.");
+	cmd->type = CMD_STROKE_CREATE;
+
+	cmd->v.stroke.ctx = ctx;
+	cmd->v.stroke.idx = ctx->desc_da->count-1;
+	cmd->v.stroke.colors = colors;
+	cmd->v.stroke.point_da = da_point_create(DA_INITIAL_CAPACITY);
+
+	cmd->v.stroke.point_da = da_point_append(cmd->v.stroke.point_da, pt);
+}
+
+void draw_mode_stroke_try_append(struct stroke_ctx *ctx, point pt, struct cmd *cmd)
+{
+	const int MIN_PX = 2;
+	static point last_valid_pt = POINT_INIT;
+
+	if (vec2_dist2(pt.coord, last_valid_pt.coord) < MIN_PX*MIN_PX)
+		return;
+	last_valid_pt = pt;
+
+	if (cmd->type != CMD_STROKE_CREATE)
+		puts("Warning: something ain't right during stroke try append. cmd_curr is not STROKE_CREATE.");
+	stroke_ctx_append_point(ctx, pt);
+	cmd->v.stroke.point_da = da_point_append(cmd->v.stroke.point_da, pt);
+}
+
+void draw_mode_stroke_end(struct cmd_hist *hist, struct cmd *cmd)
+{
+	cmd_hist_record(hist, cmd_curr);
+	cmd->type = CMD_NONE;
+}
+
+void draw_mode_stroke_mark_delete(struct stroke_ctx *ctx, int idx, struct cmd_hist *hist, struct cmd cmd)
+{
+	stroke_ctx_mark_delete(
+		ctx, 
+		idx,
+		true
+	);
+
+	if (cmd.type != CMD_NONE)
+		puts("Warning: Something ain't right during stroke mark delete. cmd_curr is not NONE.");
+
+	cmd.type = CMD_STROKE_DELETE;
+	cmd.v.stroke.ctx = ctx;
+	cmd.v.stroke.idx = idx;
+
+	cmd_hist_record(hist, cmd);
+	cmd.type = CMD_NONE;
+}
+
+void draw_mode_event(const sapp_event *e)
+{
+	int idx;
+
+	draw_mode_event_mouse(e);
+	draw_mode_event_camera(e);
+
+	/* Mode transitions */
+	switch (e->type) {
+	case SAPP_EVENTTYPE_CHAR: 
+		if (e->char_code == ':') {
+			mode_switch_command();
+			break;
+		}
+		if (e->char_code == 'i') {
+			text_ctx_append(&canvas.text_ctx, *active_colors, FONT_SIZE_DEFAULT, mouse_world);
+			text_in_edit = DA_LAST(canvas.text_ctx.text_da);
+			mode_switch_text();
+			return;
+		}
 		break;
 	default: break;
 	}
 
-	switch(e->type) {
-	case SAPP_EVENTTYPE_CHAR: 
-		if (e->char_code == ':') {
-			app_mode_set_command();
-			break;
-		}
-		if (e->char_code == 'i') {
-			text_ctx_append(&canvas.text_ctx);
-			text_obj_curr = DA_LAST(canvas.text_ctx.text_da);
-			app_mode_set_text();
-			break;
+	switch (e->type) {
+	/* Mouse */
+	case SAPP_EVENTTYPE_MOUSE_UP:
+		if (is_drawing_stroke) {
+			is_drawing_stroke = false;
+			draw_mode_stroke_end(&cmd_hist, &cmd_curr);
 		}
 		break;
+	case SAPP_EVENTTYPE_MOUSE_DOWN:
+		if (status_line_len)
+			status_line_len = 0;
+
+		if (e->modifiers & SAPP_MODIFIER_ALT) {
+			if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+				
+			}
+		}
+
+		if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT)
+			active_colors = &colors_primary;
+		else if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT)
+			active_colors = &colors_secondary;
+
+		if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT || e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+			if (is_drawing_stroke)
+				draw_mode_stroke_end(&cmd_hist, &cmd_curr);
+
+			is_drawing_stroke = true;
+			draw_mode_stroke_begin(&canvas.stroke_ctx, mouse_point, *active_colors, &cmd_curr);
+		}
+		break;
+	case SAPP_EVENTTYPE_MOUSE_MOVE:
+		if (is_drawing_stroke) {
+			draw_mode_stroke_try_append(&canvas.stroke_ctx, mouse_point, &cmd_curr);
+		}
+		break;
+
+	/* Keyboard */
 	case SAPP_EVENTTYPE_KEY_DOWN:
-		if (e->key_code == SAPP_KEYCODE_X) {
-			is_deleting_stroke = true;
-			is_deleting_stroke = true;
-		}
-
-		if (e->key_code == SAPP_KEYCODE_A) { }
-
-		if (e->key_code == SAPP_KEYCODE_M) {
-			cmd_save_idx = cmd_hist.cursor;
-		}
-		if (e->key_code == SAPP_KEYCODE_APOSTROPHE) {
-			while (cmd_hist.cursor != cmd_save_idx) {
-				/* DANGER */
-				/* TODO: Need to figure out forward or backwards, else infinte loop */
-				cmd_hist_undo(); 
-			}
-		}
-		if (e->key_code == SAPP_KEYCODE_EQUAL) {
-			while (cmd_hist.cursor != cmd_hist.last) {
-				cmd_hist_redo();
-			}
-		}
-
-		/* TODO: These can screw things up if cmd_curr is ongoing */
-		if ((e->modifiers & SAPP_MODIFIER_CTRL) && e->key_code == SAPP_KEYCODE_Z)
-			cmd_hist_undo();
-		if ((e->modifiers & SAPP_MODIFIER_CTRL) && e->key_code == SAPP_KEYCODE_R)
-			cmd_hist_redo();
+		if (status_line_len)
+			status_line_len = 0;
 
 		active_colors = &colors_primary;
 		if (e->modifiers & SAPP_MODIFIER_ALT)
@@ -747,6 +861,35 @@ void event_drawing(const sapp_event *e)
 		case SAPP_KEYCODE_4:
 			*active_colors = COLORS_CONTRAST;
 			break;
+
+		case SAPP_KEYCODE_Z:
+			if (e->modifiers & SAPP_MODIFIER_CTRL)
+				cmd_hist_undo(&cmd_hist);
+			break;
+		case SAPP_KEYCODE_R:
+			if (e->modifiers & SAPP_MODIFIER_CTRL)
+				cmd_hist_redo(&cmd_hist);
+			break;
+
+		case SAPP_KEYCODE_X:
+			is_deleting_stroke = true;
+			break;
+
+		case SAPP_KEYCODE_M:
+			cmd_save_idx = cmd_hist.cursor;
+			break;
+		case SAPP_KEYCODE_APOSTROPHE:
+			/* TODO: This is dangerous. Figure out forward or backwards, else infinte loop */
+			while (cmd_hist.cursor != cmd_save_idx) {
+				cmd_hist_undo(&cmd_hist); 
+			}
+			break;
+		case SAPP_KEYCODE_EQUAL:
+			while (cmd_hist.cursor != cmd_hist.last) {
+				cmd_hist_redo(&cmd_hist);
+			}
+			break;
+
 		default: break;
 		}
 
@@ -755,172 +898,28 @@ void event_drawing(const sapp_event *e)
 	case SAPP_EVENTTYPE_KEY_UP:
 		if (e->key_code == SAPP_KEYCODE_X) {
 			is_deleting_stroke = false;
-			is_deleting_stroke = false;
-			drawing_mouse_up(); /* no weird shenanigans mid draw */
+			draw_mode_stroke_end(&cmd_hist, &cmd_curr); /* no weird shenanigans mid draw */
 
-			if (cmd_curr.type != CMD_NONE)
-				puts("Warning: Something ain't right. cmd_curr is not NONE.");
-
-			cmd_curr.type = CMD_STROKE_DELETE;
-			cmd_curr.v.stroke.stroke_ctx = &canvas.stroke_ctx;
-			cmd_curr.v.stroke.idx = stroke_ctx_closest(&canvas.stroke_ctx, mouse_world);
-			if (cmd_curr.v.stroke.idx < 0) {
-				cmd_curr.type = CMD_NONE;
-				break;
-			}
-			stroke_ctx_mark_delete(
-				&canvas.stroke_ctx, 
-				cmd_curr.v.stroke.idx,
-				true
-			);
-			cmd_hist_record(cmd_curr);
-			cmd_curr.type = CMD_NONE;
+			idx = stroke_ctx_closest(&canvas.stroke_ctx, mouse_world);
+			if (idx >= 0)
+				draw_mode_stroke_mark_delete(&canvas.stroke_ctx, idx, &cmd_hist, cmd_curr);
 		}
-
-		break;
-	case SAPP_EVENTTYPE_MOUSE_MOVE:
-		mouse_screen.x = e->mouse_x;
-		mouse_screen.y = e->mouse_y;
-		mouse_world = screen_to_world(mouse_screen);
-
-		if (is_panning) {
-			camera_pos.x = pan_pivot_camera.x + (pan_pivot_mouse.x - mouse_screen.x)/camera_zoom;
-			camera_pos.y = pan_pivot_camera.y + (mouse_screen.y - pan_pivot_mouse.y)/camera_zoom;
-		}
-		drawing_mouse_move(pt);
-		break;
-	case SAPP_EVENTTYPE_MOUSE_DOWN:
-		if (e->mouse_button == SAPP_MOUSEBUTTON_MIDDLE) {
-			is_panning = true;
-			pan_pivot_mouse = mouse_screen;
-			pan_pivot_camera = camera_pos;
-		}
-
-		if (e->modifiers & SAPP_MODIFIER_ALT) {
-			if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
-				is_deleting_stroke = true;
-			}
-		} else {
-			if (e->mouse_button == SAPP_MOUSEBUTTON_LEFT)
-				active_colors = &colors_primary;
-			else if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT)
-				active_colors = &colors_secondary;
-
-			drawing_mouse_down(e, pt);
-		}
-		break;
-	case SAPP_EVENTTYPE_MOUSE_UP:
-		is_panning = is_panning && e->mouse_button != SAPP_MOUSEBUTTON_MIDDLE;
-		drawing_mouse_up();
-		break;
-	case SAPP_EVENTTYPE_MOUSE_SCROLL:
-		float ratio = (1 + CAMERA_ZOOM_FRAC * e->scroll_y);
-		camera_zoom *= ratio;
-		
-		// (World - OldCamera) * OldZoom = (World - NewCamera) * NewZoom
-		camera_pos.x = mouse_world.x - (mouse_world.x - camera_pos.x) / ratio;
-		camera_pos.y = mouse_world.y - (mouse_world.y - camera_pos.y) / ratio;
 		break;
 	default: break;
 	}
 }
 
-/* Note event_command relies on event_drawing to zero out status line when entering state */
-void event_command(const sapp_event *e)
-{
-	if (app_state != APP_STATE_COMMAND)
-		return;
 
-	if (e->type == SAPP_EVENTTYPE_CHAR && status_line_len < STATUS_LINE_MAX-1) {
-		status_line[status_line_len++] = e->char_code;
-		return;
-	}
-	if (e->type != SAPP_EVENTTYPE_KEY_DOWN)
-		return;
+/************ NVG DRAW FUNCTIONS ************/
 
-	switch(e->key_code) {
-	case SAPP_KEYCODE_BACKSPACE:
-		if (status_line_len <= 1)
-			break;
-
-		status_line_len--;
-		break;
-	case SAPP_KEYCODE_ENTER:
-		status_line[status_line_len] = '\0';
-		command_exec(status_line); /* status line is reused to write results. don't zero */
-
-		app_mode_set_drawing();
-		break;
-	case SAPP_KEYCODE_ESCAPE:
-		app_mode_set_drawing();
-		status_line_len = 0;
-		break;
-	default: break;
-	}
-}
-
-void event_text(const sapp_event *e)
-{
-	struct text_obj *t = text_obj_curr;
-
-	if (app_state != APP_STATE_TEXT || !t)
-		return;
-
-	if (e->type == SAPP_EVENTTYPE_CHAR)
-		gapbuf_insert(&t->buf, (unsigned char)e->char_code);
-
-	if (e->type != SAPP_EVENTTYPE_KEY_DOWN)
-		return;
-
-	switch(e->key_code) {
-	case SAPP_KEYCODE_LEFT:
-		gapbuf_open(t->buf, t->buf->gap_start-1);
-		break;
-	case SAPP_KEYCODE_RIGHT:
-		gapbuf_open(t->buf, t->buf->gap_start+1);
-		break;
-	case SAPP_KEYCODE_UP:
-		break;
-	case SAPP_KEYCODE_DOWN:
-		break;
-	case SAPP_KEYCODE_BACKSPACE:
-		gapbuf_delete(t->buf);
-		break;
-	case SAPP_KEYCODE_ENTER:
-		gapbuf_insert(&t->buf, (unsigned char)'\n');
-		break;
-	case SAPP_KEYCODE_ESCAPE:
-		app_mode_set_drawing();
-		break;
-	default: break;
-	}
-}
-
-void event(const sapp_event *e)
-{
-	switch(e->type) {
-	case SAPP_EVENTTYPE_RESIZED:
-		screen_width = sapp_width();
-		screen_height = sapp_height();
-		break;
-	default: break;
-	}
-
-	event_text(e);
-	event_drawing(e);
-	event_command(e);
-}
-
-/****** DRAW */
-
-void nvg_fontsize_ctx(NVGcontext *ctx, const struct text_obj *txt)
+static inline void nvg_fontsize_ctx(NVGcontext *ctx, const struct text_obj *txt)
 {
 	nvgFontSize(ctx, txt->font_size);
 	nvgFontFaceId(ctx, txt->font_handle);
 	nvgTextAlign(ctx, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
 }
 
-vec2 get_cursor_offset(const struct text_obj *txt)
+static inline vec2 get_cursor_offset(const struct text_obj *txt)
 {
 	size_t start, i;
 	float x = 0, 
@@ -939,7 +938,7 @@ vec2 get_cursor_offset(const struct text_obj *txt)
 	return (vec2) { x, y };
 }
 
-vec2 get_cursor_size(const struct text_obj *txt)
+static inline vec2 get_cursor_size(const struct text_obj *txt)
 {
 	float ascender, descender;
 	float advance;
@@ -959,7 +958,7 @@ vec2 get_cursor_size(const struct text_obj *txt)
 	return (vec2) { advance, ascender - descender };
 }
 
-void draw_cursor_overlay(const struct text_obj *txt, bool local)
+void draw_text_cursor_overlay(const struct text_obj *txt, bool local)
 {
 	vec2 offset = get_cursor_offset(txt);
 	vec2 size = get_cursor_size(txt);
@@ -989,7 +988,7 @@ void draw_text(const struct text_obj *txt, bool draw_cursor)
 
 	nvg_fontsize_ctx(vg, txt);
 	nvgFillColor(vg, color_to_NVGcolor(txt->colors[theme]));
-	
+
 	nvgSave(vg);
 	nvgScale(vg, 1, -1);
 	nvgTranslate(vg, txt->obj.pos.x, -txt->obj.pos.y);
@@ -1019,7 +1018,7 @@ void draw_text(const struct text_obj *txt, bool draw_cursor)
 			i++;
 		}
 		if (draw_cursor)
-			draw_cursor_overlay(txt, true);
+			draw_text_cursor_overlay(txt, true);
 	nvgRestore(vg);
 }
 
@@ -1030,8 +1029,8 @@ void draw_text_ctx(const struct text_ctx *ctx)
 	for (i = 0; i < ctx->text_da->count; i++) {
 		draw_text(
 			ctx->text_da->elems + i, 
-			app_state == APP_STATE_TEXT 
-			&& ctx->text_da->elems + i == text_obj_curr 
+			mode == MODE_TEXT 
+			&& ctx->text_da->elems + i == text_in_edit 
 		);
 	}
 }
@@ -1101,6 +1100,68 @@ void draw_status_line(void)
 	nvgText(vg, coord.x, coord.y, status_line, status_line + status_line_len);
 }
 
+
+/************ SOKOL APP ************/
+
+void init(void) 
+{
+	stm_setup();
+
+	canvas = canvas_create_empty();
+	selected_objs = da_object_ptr_create(DA_INITIAL_CAPACITY);
+	selected_objs = da_object_ptr_append(selected_objs, NULL);
+
+	clear_colors = COLORS_BACKGROUND;
+	colors_primary = COLORS_YELLOW;
+	colors_secondary = COLORS_RED;
+	active_colors = &colors_primary;
+
+	screen_width = sapp_width();
+	screen_height = sapp_height();
+	gladLoaderLoadGL();
+	vg = nvgCreateGL3(NVG_ANTIALIAS | NVG_STENCIL_STROKES);
+
+	font_handle = nvgCreateFontMem(vg, "Inconsolata-Regular-Sub", (u8 *)inconsolata_ttf, inconsolata_ttf_len, 0);
+
+	mode_switch_drawing();
+
+#ifdef _WIN32
+	#include <windows.h>
+	HWND hwnd = (HWND)sapp_win32_get_hwnd();
+	ShowWindow(hwnd, SW_MAXIMIZE);
+#endif
+}
+
+void cleanup(void)
+{
+	gladLoaderUnloadGL();
+	nvgDeleteGL3(vg);
+}
+
+void event(const sapp_event *e)
+{
+	switch (e->type) {
+	case SAPP_EVENTTYPE_RESIZED:
+		screen_width = sapp_width();
+		screen_height = sapp_height();
+		break;
+	default: break;
+	}
+
+	switch (mode) {
+	case MODE_DRAW:
+		draw_mode_event(e);
+		break;
+	case MODE_TEXT:
+		text_mode_event(e);
+		break;
+	case MODE_COMMAND:
+		command_mode_event(e);
+		break;
+	default: break;
+	}
+}
+
 void frame(void) 
 {
 	color c;
@@ -1111,15 +1172,14 @@ void frame(void)
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
 	nvgBeginFrame(vg, screen_width/screen_dpi_scale, screen_height/screen_dpi_scale, screen_dpi_scale);
-
-	nvgSave(vg);
-	nvgTranslate(vg, screen_width/2, screen_height/2);
-	nvgScale(vg, camera_zoom, -camera_zoom);
-	nvgTranslate(vg, -camera_pos.x, -camera_pos.y);
-		draw_stroke_ctx(&canvas.stroke_ctx);
-		draw_text_ctx(&canvas.text_ctx);
-	nvgRestore(vg);
-		if (app_state == APP_STATE_DRAW && mouse_in_frame) {
+		nvgSave(vg);
+		nvgTranslate(vg, screen_width/2, screen_height/2);
+		nvgScale(vg, camera_zoom, -camera_zoom);
+		nvgTranslate(vg, -camera_pos.x, -camera_pos.y);
+			draw_stroke_ctx(&canvas.stroke_ctx);
+			draw_text_ctx(&canvas.text_ctx);
+		nvgRestore(vg);
+		if (mode == MODE_DRAW && mouse_in_frame) {
 			nvgBeginPath(vg);
 				nvgCircle(vg, roundf(mouse_screen.x), round(mouse_screen.y), camera_zoom*STROKE_OPTS.size/1.5);
 			c = (*active_colors)[theme];
@@ -1149,5 +1209,7 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 				.pixels = SAPP_RANGE(APP_ICON_32x32),
 			}}
 		},
+		.swap_interval = 1,
 	};
 }
+
