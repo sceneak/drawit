@@ -62,7 +62,7 @@ struct stroke_desc {
 #define name da_stroke_desc
 #include "da.t.h"
 
-struct stroke_ctx {
+struct stroke_store {
 	struct da_point       *input_da;
 	pfh_vec2_buf           pfh_vertex_buf;
 	struct da_stroke_desc *desc_da;
@@ -82,13 +82,13 @@ struct text_obj {
 #define name da_text_obj
 #include "da.t.h"
 
-struct text_ctx {
+struct text_store {
 	struct da_text_obj *text_da;
 };
 
 struct canvas {
-	struct stroke_ctx stroke_ctx;
-	struct text_ctx text_ctx;
+	struct stroke_store stroke_store;
+	struct text_store text_store;
 };
 
 enum cmd_type {
@@ -102,7 +102,7 @@ struct cmd {
 	union {
 		struct cmd_stroke_data {
 			int idx;
-			struct stroke_ctx *ctx;
+			struct stroke_store *store;
 			struct da_point *point_da; 
 			const color *colors;
 		} stroke;
@@ -284,32 +284,32 @@ static inline void status_line_set(struct status_line *s, const char *str)
 
 struct canvas canvas_create_empty()
 {
-	struct stroke_ctx stroke_ctx = {
+	struct stroke_store stroke_store = {
 		.desc_da = da_stroke_desc_create(DA_INITIAL_CAPACITY),
 		.input_da = da_point_create(DA_INITIAL_CAPACITY),
 	};
-	struct text_ctx text_ctx = {
+	struct text_store text_store = {
 		.text_da = da_text_obj_create(DA_INITIAL_CAPACITY),
 	};
 
-	pfh_vec2_buf_init(&stroke_ctx.pfh_vertex_buf, DA_INITIAL_CAPACITY);
+	pfh_vec2_buf_init(&stroke_store.pfh_vertex_buf, DA_INITIAL_CAPACITY);
 
-	return (struct canvas) { stroke_ctx, text_ctx, };
+	return (struct canvas) { stroke_store, text_store, };
 }
 
 
 /************ CANVAS: STROKE ************/
 
-void stroke_ctx_print(const struct stroke_ctx *ctx) 
+void stroke_store_print(const struct stroke_store *store) 
 {
 	size_t i;
 	struct stroke_desc *s;
 
-	printf("inputs (%zu)\n", ctx->input_da->count);
-	printf("vertices (%zu)\n", ctx->pfh_vertex_buf.count);
+	printf("inputs (%zu)\n", store->input_da->count);
+	printf("vertices (%zu)\n", store->pfh_vertex_buf.count);
 	puts("desc_da:");
-	for (i = 0; i < ctx->desc_da->count; i++) {
-		s = ctx->desc_da->elems + i;
+	for (i = 0; i < store->desc_da->count; i++) {
+		s = store->desc_da->elems + i;
 		printf("stroke_desc[%zu]\n", i);
 		printf("  input: idx %zu, count %zu\n", s->input_idx, s->input_count);
 		printf("  vertex: idx %zu, count %zu\n", s->vertex_idx, s->vertex_count);
@@ -318,79 +318,79 @@ void stroke_ctx_print(const struct stroke_ctx *ctx)
 	puts("");
 }
 
-void stroke_ctx_begin(struct stroke_ctx *ctx, const color *colors)
+void stroke_store_begin(struct stroke_store *store, const color *colors)
 {
-	ctx->desc_da = da_stroke_desc_append(ctx->desc_da, (struct stroke_desc) { 
+	store->desc_da = da_stroke_desc_append(store->desc_da, (struct stroke_desc) { 
 		.obj.bounds   = BOUNDS_INIT,
 
-		.input_idx    = ctx->input_da->count, 
+		.input_idx    = store->input_da->count, 
 		.input_count  = 0,
-		.vertex_idx   = ctx->pfh_vertex_buf.count, 
+		.vertex_idx   = store->pfh_vertex_buf.count, 
 		.vertex_count = 0,
 		.colors       = colors,
 		.deleted      = false,
 	});
 }
 
-void stroke_ctx_render_last(struct stroke_ctx *ctx)
+void stroke_store_render_last(struct stroke_store *store)
 {
-	struct stroke_desc *s = DA_LAST(ctx->desc_da);
+	struct stroke_desc *s = DA_LAST(store->desc_da);
 
-	ctx->pfh_vertex_buf.count = s->vertex_idx;
+	store->pfh_vertex_buf.count = s->vertex_idx;
 	pfh_get_stroke(
-		&ctx->pfh_vertex_buf,
-		(pfh_point*)ctx->input_da->elems + s->input_idx,
+		&store->pfh_vertex_buf,
+		(pfh_point*)store->input_da->elems + s->input_idx,
 		s->input_count,
 		&STROKE_OPTS
 	);
-	s->vertex_count = ctx->pfh_vertex_buf.count - s->vertex_idx;
+	s->vertex_count = store->pfh_vertex_buf.count - s->vertex_idx;
 }
 
-void stroke_ctx_append_point(struct stroke_ctx *ctx, point pt)
+void stroke_store_append_point(struct stroke_store *store, point pt)
 {
-	struct stroke_desc *s = DA_LAST(ctx->desc_da);
+	struct stroke_desc *s = DA_LAST(store->desc_da);
 	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
-	ctx->input_da = da_point_append(ctx->input_da, pt);
+	store->input_da = da_point_append(store->input_da, pt);
 	s->input_count++;
 	s->obj.bounds = rect_fit_rect(s->obj.bounds, rect_create(pt.coord, PT_EXTENTS));
 
-	stroke_ctx_render_last(ctx);
+	stroke_store_render_last(store);
 }
 
-void stroke_ctx_append_points(struct stroke_ctx *ctx, const point pts[], int count)
+void stroke_store_append_points(struct stroke_store *store, const point pts[], int count)
 {
 	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
-	struct stroke_desc *s = DA_LAST(ctx->desc_da);
+	struct stroke_desc *s = DA_LAST(store->desc_da);
 	int i;
 
-	ctx->input_da = da_point_append_n(ctx->input_da, pts, count);
+	store->input_da = da_point_append_n(store->input_da, pts, count);
 	s->input_count += count;
 	for (i = 0; i < count; i++)
 		s->obj.bounds = rect_fit_rect(s->obj.bounds, rect_create(pts[i].coord, PT_EXTENTS));
 
-	stroke_ctx_render_last(ctx);
+	stroke_store_render_last(store);
 }
 
-void stroke_ctx_mark_delete(struct stroke_ctx *ctx, int stroke_idx, bool deleted)
+void stroke_store_mark_delete(struct stroke_store *store, int stroke_idx, bool deleted)
 {
-	ctx->desc_da->elems[stroke_idx].deleted = deleted;
+	store->desc_da->elems[stroke_idx].deleted = deleted;
 }
 
-void stroke_ctx_delete_last(struct stroke_ctx *ctx)
+void stroke_store_delete_last(struct stroke_store *store)
 {
-	struct stroke_desc *s = DA_LAST(ctx->desc_da);
+	struct stroke_desc *s = DA_LAST(store->desc_da);
 
-	ctx->input_da->count = s->input_idx;
-	ctx->pfh_vertex_buf.count = s->vertex_idx;
-	ctx->desc_da->count--;
+	store->input_da->count = s->input_idx;
+	store->pfh_vertex_buf.count = s->vertex_idx;
+	store->desc_da->count--;
 }
 
-float stroke_ctx_dist(const struct stroke_ctx *ctx, int stroke_idx, vec2 v)
+float stroke_store_dist(const struct stroke_store *store, int stroke_idx, vec2 v)
 {
-	const struct stroke_desc *s = ctx->desc_da->elems + stroke_idx;
-	const point *s_inputs = ctx->input_da->elems + s->input_idx;
+	const struct stroke_desc *s = store->desc_da->elems + stroke_idx;
+	const point *s_inputs = store->input_da->elems + s->input_idx;
 	float closest_dist2 = FLT_MAX;
 	float dist2;
 	size_t i;
@@ -403,19 +403,19 @@ float stroke_ctx_dist(const struct stroke_ctx *ctx, int stroke_idx, vec2 v)
 	return closest_dist2;
 }
 
-int stroke_ctx_closest(const struct stroke_ctx *ctx, vec2 v)
+int stroke_store_closest(const struct stroke_store *store, vec2 v)
 {
 	size_t closest_stroke_idx = -1;
 	float closest_dist2 = FLT_MAX;
 	float dist2;
 	size_t i;
 
-	for (i = 0; i < ctx->desc_da->count; i++) {
-		if (ctx->desc_da->elems[i].deleted)
+	for (i = 0; i < store->desc_da->count; i++) {
+		if (store->desc_da->elems[i].deleted)
 			continue;
-		if (!rect_contains(ctx->desc_da->elems[i].obj.bounds, v))
+		if (!rect_contains(store->desc_da->elems[i].obj.bounds, v))
 			continue;
-		dist2 = stroke_ctx_dist(ctx, i, v);
+		dist2 = stroke_store_dist(store, i, v);
 		if (dist2 >= closest_dist2)
 			continue;
 		closest_dist2 = dist2;
@@ -426,14 +426,14 @@ int stroke_ctx_closest(const struct stroke_ctx *ctx, vec2 v)
 
 /************ CANVAS: TEXT ************/
 
-void text_ctx_print(const struct text_ctx *ctx)
+void text_store_print(const struct text_store *store)
 {
 	size_t i;
 	struct text_obj *t;
 
 	puts("text_da:");
-	for (i = 0; i < ctx->text_da->count; i++) {
-		t = ctx->text_da->elems + i;
+	for (i = 0; i < store->text_da->count; i++) {
+		t = store->text_da->elems + i;
 		printf("text[%zu]\n", i);
 		printf("   pos: (%f, %f)\n"
 		       "  font: %d\n"
@@ -465,15 +465,15 @@ struct text_obj text_obj_create(const color *colors, int font_handle, float font
 	};
 }
 
-static inline void text_ctx_append(struct text_ctx *ctx, const color *colors, int font_handle, float font_size, vec2 pos)
+static inline void text_store_append(struct text_store *store, const color *colors, int font_handle, float font_size, vec2 pos)
 {
-	ctx->text_da = da_text_obj_append(ctx->text_da, text_obj_create(colors, font_handle, font_size, pos));
+	store->text_da = da_text_obj_append(store->text_da, text_obj_create(colors, font_handle, font_size, pos));
 }
 
-void text_ctx_edit(struct text_ctx *ctx, point pt);
-void text_ctx_delete(struct text_ctx *ctx, int text_idx, bool deleted);
-float text_ctx_dist(const struct text_ctx *ctx, int text_idx, vec2 v);
-int text_ctx_closest_idx(const struct text_ctx *ctx, vec2 v);
+void text_store_edit(struct text_store *store, point pt);
+void text_store_delete(struct text_store *store, int text_idx, bool deleted);
+float text_store_dist(const struct text_store *store, int text_idx, vec2 v);
+int text_store_closest_idx(const struct text_store *store, vec2 v);
 
 /************ CMD ************/
 
@@ -494,10 +494,10 @@ void cmd_undo(struct cmd c)
 {
 	switch (c.type) {
 	case CMD_STROKE_DELETE:
-		stroke_ctx_mark_delete(c.v.stroke.ctx, c.v.stroke.idx, false);
+		stroke_store_mark_delete(c.v.stroke.store, c.v.stroke.idx, false);
 		break;
 	case CMD_STROKE_CREATE:
-		stroke_ctx_delete_last(c.v.stroke.ctx);
+		stroke_store_delete_last(c.v.stroke.store);
 		break;
 	default: break;
 	}
@@ -507,16 +507,16 @@ void cmd_redo(struct cmd c)
 {
 	switch (c.type) {
 	case CMD_STROKE_DELETE:
-		stroke_ctx_mark_delete(
-			c.v.stroke.ctx,
+		stroke_store_mark_delete(
+			c.v.stroke.store,
 			c.v.stroke.idx,
 			true
 		);
 		break;
 	case CMD_STROKE_CREATE:
-		stroke_ctx_begin(c.v.stroke.ctx, c.v.stroke.colors);
-		stroke_ctx_append_points(
-			c.v.stroke.ctx,
+		stroke_store_begin(c.v.stroke.store, c.v.stroke.colors);
+		stroke_store_append_points(
+			c.v.stroke.store,
 			c.v.stroke.point_da->elems,
 			c.v.stroke.point_da->count
 		);
@@ -609,8 +609,8 @@ void command_exec(const char *str)
 		} else if (drawit_strcasecmp(str, "quit") == 0 || (str[0] == 'q')) {
 			sapp_request_quit();
 		} else if (drawit_strcasecmp(str, "print") == 0 || (str[0] == 'p')) {
-			stroke_ctx_print(&canvas->stroke_ctx);
-			status_line_set(status, "debug print stroke ctx to stdout");
+			stroke_store_print(&canvas->stroke_store);
+			status_line_set(status, "debug print stroke store to stdout");
 		} else {
 			status_line_set(status, "unknown command");
 		}
@@ -779,25 +779,25 @@ void draw_mode_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
 	}
 }
 
-void draw_mode_stroke_begin(struct stroke_ctx *ctx, point pt, const color *colors, struct cmd *cmd)
+void draw_mode_stroke_begin(struct stroke_store *store, point pt, const color *colors, struct cmd *cmd)
 {
-	stroke_ctx_begin(ctx, colors);
-	stroke_ctx_append_point(ctx, pt);
+	stroke_store_begin(store, colors);
+	stroke_store_append_point(store, pt);
 
 
 	if (cmd->type != CMD_NONE)
 		puts("Warning: something ain't right during stroke begin. cmd->is not NONE.");
 	cmd->type = CMD_STROKE_CREATE;
 
-	cmd->v.stroke.ctx = ctx;
-	cmd->v.stroke.idx = ctx->desc_da->count-1;
+	cmd->v.stroke.store = store;
+	cmd->v.stroke.idx = store->desc_da->count-1;
 	cmd->v.stroke.colors = colors;
 	cmd->v.stroke.point_da = da_point_create(DA_INITIAL_CAPACITY);
 
 	cmd->v.stroke.point_da = da_point_append(cmd->v.stroke.point_da, pt);
 }
 
-void draw_mode_stroke_try_append(struct stroke_ctx *ctx, point pt, struct cmd *cmd)
+void draw_mode_stroke_try_append(struct stroke_store *store, point pt, struct cmd *cmd)
 {
 	const int MIN_PX = 2;
 	static point last_valid_pt = POINT_INIT;
@@ -808,7 +808,7 @@ void draw_mode_stroke_try_append(struct stroke_ctx *ctx, point pt, struct cmd *c
 
 	if (cmd->type != CMD_STROKE_CREATE)
 		puts("Warning: something ain't right during stroke try append. cmd buffer is not STROKE_CREATE.");
-	stroke_ctx_append_point(ctx, pt);
+	stroke_store_append_point(store, pt);
 	cmd->v.stroke.point_da = da_point_append(cmd->v.stroke.point_da, pt);
 }
 
@@ -818,10 +818,10 @@ void draw_mode_stroke_end(struct cmd_hist_state *state)
 	state->buf.type = CMD_NONE;
 }
 
-void draw_mode_stroke_mark_delete(struct stroke_ctx *ctx, int idx, struct cmd_hist *hist, struct cmd cmd)
+void draw_mode_stroke_mark_delete(struct stroke_store *store, int idx, struct cmd_hist *hist, struct cmd cmd)
 {
-	stroke_ctx_mark_delete(
-		ctx, 
+	stroke_store_mark_delete(
+		store, 
 		idx,
 		true
 	);
@@ -830,7 +830,7 @@ void draw_mode_stroke_mark_delete(struct stroke_ctx *ctx, int idx, struct cmd_hi
 		puts("Warning: Something ain't right during stroke mark delete. cmd buffer is not NONE.");
 
 	cmd.type = CMD_STROKE_DELETE;
-	cmd.v.stroke.ctx = ctx;
+	cmd.v.stroke.store = store;
 	cmd.v.stroke.idx = idx;
 
 	cmd_hist_record(hist, cmd);
@@ -860,8 +860,8 @@ void draw_mode_event(const sapp_event *e)
 			break;
 		}
 		if (e->char_code == 'i') {
-			text_ctx_append(&canvas->text_ctx, *pen->active_colors, gfx->font_handle, FONT_SIZE_DEFAULT, gfx->mouse.world);
-			mode_text->text_in_edit = DA_LAST(canvas->text_ctx.text_da);
+			text_store_append(&canvas->text_store, *pen->active_colors, gfx->font_handle, FONT_SIZE_DEFAULT, gfx->mouse.world);
+			mode_text->text_in_edit = DA_LAST(canvas->text_store.text_da);
 			mode_switch_text();
 			return;
 		}
@@ -897,12 +897,12 @@ void draw_mode_event(const sapp_event *e)
 				draw_mode_stroke_end(cmd_hist_state);
 
 			mode_draw->is_drawing_stroke = true;
-			draw_mode_stroke_begin(&canvas->stroke_ctx, pen->point_data, *pen->active_colors, &cmd_hist_state->buf);
+			draw_mode_stroke_begin(&canvas->stroke_store, pen->point_data, *pen->active_colors, &cmd_hist_state->buf);
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		if (mode_draw->is_drawing_stroke) {
-			draw_mode_stroke_try_append(&canvas->stroke_ctx, pen->point_data, &cmd_hist_state->buf);
+			draw_mode_stroke_try_append(&canvas->stroke_store, pen->point_data, &cmd_hist_state->buf);
 		}
 		break;
 
@@ -974,9 +974,9 @@ void draw_mode_event(const sapp_event *e)
 		if (e->key_code == SAPP_KEYCODE_X) {
 			draw_mode_stroke_end(cmd_hist_state); /* no weird shenanigans mid draw */
 
-			idx = stroke_ctx_closest(&canvas->stroke_ctx, gfx->mouse.world);
+			idx = stroke_store_closest(&canvas->stroke_store, gfx->mouse.world);
 			if (idx >= 0)
-				draw_mode_stroke_mark_delete(&canvas->stroke_ctx, idx, &cmd_hist_state->hist, cmd_hist_state->buf);
+				draw_mode_stroke_mark_delete(&canvas->stroke_store, idx, &cmd_hist_state->hist, cmd_hist_state->buf);
 		}
 		break;
 	default: break;
@@ -1096,15 +1096,15 @@ void draw_text(struct graphic_ctx *gfx, const struct text_obj *txt, bool draw_cu
 	nvgRestore(gfx->vg);
 }
 
-void draw_text_ctx(struct graphic_ctx *gfx, const struct text_ctx *ctx, const struct mode_text_ctx *mode_text)
+void draw_text_store(struct graphic_ctx *gfx, const struct text_store *store, const struct mode_text_ctx *mode_text)
 {
 	size_t i;
 
-	for (i = 0; i < ctx->text_da->count; i++) {
+	for (i = 0; i < store->text_da->count; i++) {
 		draw_text(
 			gfx,
-			ctx->text_da->elems + i, 
-			g_drawit.mode == MODE_TEXT && ctx->text_da->elems + i == mode_text->text_in_edit 
+			store->text_da->elems + i, 
+			g_drawit.mode == MODE_TEXT && store->text_da->elems + i == mode_text->text_in_edit 
 		);
 	}
 }
@@ -1118,7 +1118,7 @@ void draw_rect(struct graphic_ctx *gfx, rect r)
 	nvgStroke(gfx->vg);
 }
 
-void draw_stroke_ctx(struct graphic_ctx *gfx, struct stroke_ctx *ctx, const struct mode_draw_ctx *mode_draw)
+void draw_stroke_store(struct graphic_ctx *gfx, struct stroke_store *store, const struct mode_draw_ctx *mode_draw)
 {
 	size_t i, j;
 	struct stroke_desc *s;
@@ -1126,14 +1126,14 @@ void draw_stroke_ctx(struct graphic_ctx *gfx, struct stroke_ctx *ctx, const stru
 	pfh_vec2 p0, p1;
 	int tmp;
 
-	for (i = 0; i < ctx->desc_da->count; i++) {
-		s = ctx->desc_da->elems + i;
+	for (i = 0; i < store->desc_da->count; i++) {
+		s = store->desc_da->elems + i;
 		if (s->deleted)
 			continue;
 		if (s->vertex_count < 3) /* shouldn't happen, a dot is 13 segs */
 			continue;
 
-		s_vertices = ctx->pfh_vertex_buf.elems + s->vertex_idx;
+		s_vertices = store->pfh_vertex_buf.elems + s->vertex_idx;
 
 		nvgBeginPath(gfx->vg);
 		nvgFillColor(gfx->vg, color_to_NVGcolor(s->colors[g_drawit.theme]));
@@ -1152,10 +1152,10 @@ void draw_stroke_ctx(struct graphic_ctx *gfx, struct stroke_ctx *ctx, const stru
 		nvgFill(gfx->vg);
 	}
 	if (mode_draw->is_deleting_stroke) {
-		tmp = stroke_ctx_closest(ctx, gfx->mouse.world);
+		tmp = stroke_store_closest(store, gfx->mouse.world);
 		if (tmp == -1)
 			return;
-		draw_rect(gfx, ctx->desc_da->elems[tmp].obj.bounds);
+		draw_rect(gfx, store->desc_da->elems[tmp].obj.bounds);
 	}
 }
 
@@ -1266,8 +1266,8 @@ void frame(void)
 			nvgScale(gfx->vg, cam->zoom, -cam->zoom);
 			nvgTranslate(gfx->vg, -cam->pos.x, -cam->pos.y);
 
-			draw_stroke_ctx(gfx, &canvas->stroke_ctx, mode_draw);
-			draw_text_ctx(gfx, &canvas->text_ctx, mode_text);
+			draw_stroke_store(gfx, &canvas->stroke_store, mode_draw);
+			draw_text_store(gfx, &canvas->text_store, mode_text);
 		nvgRestore(gfx->vg);
 		if (g_drawit.mode == MODE_DRAW && !gfx->mouse.is_outside_frame) {
 			nvgBeginPath(gfx->vg);
