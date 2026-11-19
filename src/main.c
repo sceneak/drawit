@@ -20,15 +20,18 @@
 #define STROKE_BOUNDS_MARGIN 5
 #define VELOCITY_MAX_IN 1200 /* will mult. by screen_dpi_scale (inch) */
 #define STATUS_LINE_MAX 512
-#define POINT_INIT { .coord = { FLT_MAX, FLT_MAX }, .pressure = .5 }
+#define PEN_PT_INIT { .coord = { FLT_MAX, FLT_MAX }, .pressure = .5 }
 #define FONT_SIZE_DEFAULT 64.0
 
 
 /********* CORE DATA STRUCTURES **********/
-typedef struct { vec2 coord; float pressure; } point;
+struct pen_pt {
+	vec2 coord;
+	float pressure;
+};
 
-#define T point
-#define name da_point
+#define T struct pen_pt
+#define name da_pen_pt
 #include "da.t.h"
 
 enum object_kind {
@@ -63,7 +66,7 @@ struct stroke_desc {
 #include "da.t.h"
 
 struct stroke_store {
-	struct da_point       *input_da;
+	struct da_pen_pt      *input_da;
 	pfh_vec2_buf           pfh_vertex_buf;
 	struct da_stroke_desc *desc_da;
 };
@@ -103,8 +106,8 @@ struct cmd {
 		struct cmd_stroke_data {
 			int idx;
 			struct stroke_store *store;
-			struct da_point *point_da; 
-			const color *colors;
+			struct da_pen_pt    *pen_pt_da; 
+			const color         *colors;
 		} stroke;
 	} v;
 };
@@ -164,7 +167,7 @@ enum mode {
 };
 
 struct pen {
-	point point_data;
+	struct pen_pt curr_pt;
 	const color *colors_primary;
 	const color *colors_secondary;
 	const color **active_colors;
@@ -286,7 +289,7 @@ struct canvas canvas_create_empty()
 {
 	struct stroke_store stroke_store = {
 		.desc_da = da_stroke_desc_create(DA_INITIAL_CAPACITY),
-		.input_da = da_point_create(DA_INITIAL_CAPACITY),
+		.input_da = da_pen_pt_create(DA_INITIAL_CAPACITY),
 	};
 	struct text_store text_store = {
 		.text_da = da_text_obj_create(DA_INITIAL_CAPACITY),
@@ -346,26 +349,26 @@ void stroke_store_render_last(struct stroke_store *store)
 	s->vertex_count = store->pfh_vertex_buf.count - s->vertex_idx;
 }
 
-void stroke_store_append_point(struct stroke_store *store, point pt)
+void stroke_store_append_point(struct stroke_store *store, struct pen_pt pt)
 {
 	struct stroke_desc *s = DA_LAST(store->desc_da);
 	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
-	store->input_da = da_point_append(store->input_da, pt);
+	store->input_da = da_pen_pt_append(store->input_da, pt);
 	s->input_count++;
 	s->obj.bounds = rect_fit_rect(s->obj.bounds, rect_create(pt.coord, PT_EXTENTS));
 
 	stroke_store_render_last(store);
 }
 
-void stroke_store_append_points(struct stroke_store *store, const point pts[], int count)
+void stroke_store_append_points(struct stroke_store *store, const struct pen_pt pts[], int count)
 {
 	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
 	struct stroke_desc *s = DA_LAST(store->desc_da);
 	int i;
 
-	store->input_da = da_point_append_n(store->input_da, pts, count);
+	store->input_da = da_pen_pt_append_n(store->input_da, pts, count);
 	s->input_count += count;
 	for (i = 0; i < count; i++)
 		s->obj.bounds = rect_fit_rect(s->obj.bounds, rect_create(pts[i].coord, PT_EXTENTS));
@@ -390,7 +393,7 @@ void stroke_store_delete_last(struct stroke_store *store)
 float stroke_store_dist(const struct stroke_store *store, int stroke_idx, vec2 v)
 {
 	const struct stroke_desc *s = store->desc_da->elems + stroke_idx;
-	const point *s_inputs = store->input_da->elems + s->input_idx;
+	const struct pen_pt *s_inputs = store->input_da->elems + s->input_idx;
 	float closest_dist2 = FLT_MAX;
 	float dist2;
 	size_t i;
@@ -470,7 +473,7 @@ static inline void text_store_append(struct text_store *store, const color *colo
 	store->text_da = da_text_obj_append(store->text_da, text_obj_create(colors, font_handle, font_size, pos));
 }
 
-void text_store_edit(struct text_store *store, point pt);
+void text_store_edit(struct text_store *store, struct pen_pt pt);
 void text_store_delete(struct text_store *store, int text_idx, bool deleted);
 float text_store_dist(const struct text_store *store, int text_idx, vec2 v);
 int text_store_closest_idx(const struct text_store *store, vec2 v);
@@ -483,7 +486,7 @@ void cmd_forget(struct cmd *cmd)
 	case CMD_STROKE_DELETE:
 		break;
 	case CMD_STROKE_CREATE:
-		free(cmd->v.stroke.point_da);
+		free(cmd->v.stroke.pen_pt_da);
 		break;
 	default: break;
 	}
@@ -517,8 +520,8 @@ void cmd_redo(struct cmd c)
 		stroke_store_begin(c.v.stroke.store, c.v.stroke.colors);
 		stroke_store_append_points(
 			c.v.stroke.store,
-			c.v.stroke.point_da->elems,
-			c.v.stroke.point_da->count
+			c.v.stroke.pen_pt_da->elems,
+			c.v.stroke.pen_pt_da->count
 		);
 		break;
 	default: break;
@@ -711,7 +714,7 @@ void draw_mode_event_mouse(struct graphic_ctx *gfx, struct pen *pen, const sapp_
 	static u64 last_move = 0;
 	double delta, vel;
 
-	static point last_pt = POINT_INIT;
+	static struct pen_pt last_pt = PEN_PT_INIT;
 
 	switch (e->type) {
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
@@ -723,13 +726,13 @@ void draw_mode_event_mouse(struct graphic_ctx *gfx, struct pen *pen, const sapp_
 	case SAPP_EVENTTYPE_MOUSE_UP:
 		delta = stm_sec(stm_laptime(&last_move));
 
-		pen->point_data.coord = gfx->mouse.world;
-		vel = ( sqrtf(vec2_dist2(pen->point_data.coord, last_pt.coord)) / delta );
+		pen->curr_pt.coord = gfx->mouse.world;
+		vel = ( sqrtf(vec2_dist2(pen->curr_pt.coord, last_pt.coord)) / delta );
 
-		pen->point_data.pressure = 1 - min(vel / (VELOCITY_MAX_IN * gfx->screen_dpi_scale), 1);
-		pen->point_data.pressure = last_pt.pressure * .75 + pen->point_data.pressure * .25; /* blend */
+		pen->curr_pt.pressure = 1 - min(vel / (VELOCITY_MAX_IN * gfx->screen_dpi_scale), 1);
+		pen->curr_pt.pressure = last_pt.pressure * .75 + pen->curr_pt.pressure * .25; /* blend */
 
-		last_pt = pen->point_data;
+		last_pt = pen->curr_pt;
 		break;
 	default: break;
 	}
@@ -779,7 +782,7 @@ void draw_mode_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
 	}
 }
 
-void draw_mode_stroke_begin(struct stroke_store *store, point pt, const color *colors, struct cmd *cmd)
+void draw_mode_stroke_begin(struct stroke_store *store, struct pen_pt pt, const color *colors, struct cmd *cmd)
 {
 	stroke_store_begin(store, colors);
 	stroke_store_append_point(store, pt);
@@ -792,15 +795,15 @@ void draw_mode_stroke_begin(struct stroke_store *store, point pt, const color *c
 	cmd->v.stroke.store = store;
 	cmd->v.stroke.idx = store->desc_da->count-1;
 	cmd->v.stroke.colors = colors;
-	cmd->v.stroke.point_da = da_point_create(DA_INITIAL_CAPACITY);
+	cmd->v.stroke.pen_pt_da = da_pen_pt_create(DA_INITIAL_CAPACITY);
 
-	cmd->v.stroke.point_da = da_point_append(cmd->v.stroke.point_da, pt);
+	cmd->v.stroke.pen_pt_da = da_pen_pt_append(cmd->v.stroke.pen_pt_da, pt);
 }
 
-void draw_mode_stroke_try_append(struct stroke_store *store, point pt, struct cmd *cmd)
+void draw_mode_stroke_try_append(struct stroke_store *store, struct pen_pt pt, struct cmd *cmd)
 {
 	const int MIN_PX = 2;
-	static point last_valid_pt = POINT_INIT;
+	static struct pen_pt last_valid_pt = PEN_PT_INIT;
 
 	if (vec2_dist2(pt.coord, last_valid_pt.coord) < MIN_PX*MIN_PX)
 		return;
@@ -809,7 +812,7 @@ void draw_mode_stroke_try_append(struct stroke_store *store, point pt, struct cm
 	if (cmd->type != CMD_STROKE_CREATE)
 		puts("Warning: something ain't right during stroke try append. cmd buffer is not STROKE_CREATE.");
 	stroke_store_append_point(store, pt);
-	cmd->v.stroke.point_da = da_point_append(cmd->v.stroke.point_da, pt);
+	cmd->v.stroke.pen_pt_da = da_pen_pt_append(cmd->v.stroke.pen_pt_da, pt);
 }
 
 void draw_mode_stroke_end(struct cmd_hist_state *state)
@@ -897,12 +900,12 @@ void draw_mode_event(const sapp_event *e)
 				draw_mode_stroke_end(cmd_hist_state);
 
 			mode_draw->is_drawing_stroke = true;
-			draw_mode_stroke_begin(&canvas->stroke_store, pen->point_data, *pen->active_colors, &cmd_hist_state->buf);
+			draw_mode_stroke_begin(&canvas->stroke_store, pen->curr_pt, *pen->active_colors, &cmd_hist_state->buf);
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		if (mode_draw->is_drawing_stroke) {
-			draw_mode_stroke_try_append(&canvas->stroke_store, pen->point_data, &cmd_hist_state->buf);
+			draw_mode_stroke_try_append(&canvas->stroke_store, pen->curr_pt, &cmd_hist_state->buf);
 		}
 		break;
 
