@@ -24,7 +24,10 @@
 #define FONT_SIZE_DEFAULT 64.0
 
 
-/********* CORE DATA STRUCTURES **********/
+/* ==============================
+ * CORE DATA STRUCTURES 
+ * ==============================
+ */
 struct pen_pt {
 	vec2 coord;
 	float pressure;
@@ -129,7 +132,7 @@ struct cmd_hist {
 #define NAME da_cmd
 #include "da.t.h"
 
-/************ APP CTX STRUCTURES *************/
+/* APP CTX STRUCTS **/
 struct camera {
 	vec2 pos;
 	float zoom;
@@ -301,7 +304,11 @@ struct canvas canvas_create_empty()
 }
 
 
-/************ CANVAS: STROKE ************/
+/* ==============================
+ * CANVAS
+ * ==============================
+ */
+/* CANVAS: STROKES */
 void stroke_store_print(const struct stroke_store *store) 
 {
 	size_t i;
@@ -426,8 +433,7 @@ int stroke_store_closest(const struct stroke_store *store, vec2 v)
 	return closest_stroke_idx;
 }
 
-/************ CANVAS: TEXT ************/
-
+/* CANVAS: TEXT */
 void text_store_print(const struct text_store *store)
 {
 	size_t i;
@@ -481,8 +487,7 @@ void text_store_delete(struct text_store *store, int idx)
 	store->text_da = da_text_obj_swppop(store->text_da, idx);
 }
 
-/************ CANVAS: GENERAL OBJECT ************/
-
+/* CANVAS: GENERAL OBJ FUNC */
 void canvas_delete_object(struct canvas *canvas, struct object_handle hndl)
 {
 	switch(hndl.kind) {
@@ -493,8 +498,10 @@ void canvas_delete_object(struct canvas *canvas, struct object_handle hndl)
 	}
 }
 
-/************ CMD ************/
-
+/* ==============================
+ * CMD
+ * ==============================
+ */
 void cmd_forget(struct cmd *cmd)
 {
 	switch (cmd->type) {
@@ -544,8 +551,7 @@ void cmd_redo(struct cmd c)
 }
 
 
-/************ CMD_HIST ************/
-
+/* CMD_HIST */
 void cmd_hist_record(struct cmd_hist *hist, struct cmd cmd)
 {
 	hist->cursor = RINGBUF_INCR(hist->cursor, ARRAY_SIZE(hist->cmds), 1);
@@ -581,13 +587,16 @@ static void cmd_hist_redo(struct cmd_hist *hist)
 	cmd_redo(hist->cmds[hist->cursor]);
 }
 
-/*********** MODES ************/
+/* ==============================
+ * MODES
+ * ==============================
+ */
 static void mode_switch_normal(void);
 static void mode_switch_draw(void);
 static void mode_switch_command(void);
 static void mode_switch_text(void);
 
-/* MODE_NORMAL */
+/* MODE: NORMAL */
 void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
 {
 	struct camera *cam = &gfx->cam;
@@ -749,7 +758,7 @@ void mode_switch_normal(void)
 	sapp_show_mouse(false);
 }
 
-/* MODE_DRAW */
+/* MODE: DRAW */
 
 void mode_draw_stroke_begin(struct stroke_store *store, struct pen_pt pt, const color *colors, struct cmd *cmd)
 {
@@ -843,7 +852,7 @@ void mode_switch_draw(void)
 
 
 
-/* MODE_COMMAND */
+/* MODE: COMMAND */
 
 void command_exec(const char *str)
 {
@@ -911,7 +920,7 @@ void mode_switch_command(void)
 }
 
 
-/* MODE_TEXT */
+/* MODE: TEXT */
 
 void mode_text_event(const sapp_event *e)
 {
@@ -955,8 +964,10 @@ void mode_switch_text(void)
 	sapp_show_mouse(true);
 }
 
-/************ NVG DRAW FUNCTIONS ************/
-
+/* ==============================
+ * NVG DRAW FUNCS
+ * ==============================
+ */
 static inline void nvg_fontsize_ctx(NVGcontext *ctx, const struct text_obj *txt)
 {
 	nvgFontSize(ctx, txt->font_size);
@@ -1148,8 +1159,10 @@ void draw_status_line(struct graphic_ctx *gfx, const struct status_line *status)
 }
 
 
-/************ SOKOL APP ************/
-
+/* ==============================
+ * SOKOL APP
+ * ==============================
+ */
 void init(void) 
 {
 	struct graphic_ctx *gfx = &g_drawit.gfx;
