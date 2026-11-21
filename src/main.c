@@ -48,6 +48,7 @@ enum object_kind {
 struct object_data {
 	vec2             pos;
 	rect             bounds;
+	bool             deleted;
 };
 
 struct object_handle {
@@ -68,7 +69,6 @@ struct stroke_desc {
 	size_t        vertex_idx,
 	              vertex_count;
 	const color  *colors;
-	bool          deleted;
 };
 
 #define T struct stroke_desc
@@ -90,6 +90,7 @@ struct text_obj {
 	float          line_height;
 	const color   *colors;
 	struct gapbuf *buf;
+	char           bounds_dirty;
 };
 
 #define T struct text_obj
@@ -107,13 +108,19 @@ struct canvas {
 
 enum cmd_type {
 	CMD_NONE,
+
+	CMD_OBJECT_DELETE,
+
 	CMD_STROKE_CREATE,
-	CMD_STROKE_DELETE,
 };
 
 struct cmd {
 	enum cmd_type type;
 	union ctx {
+		struct {
+			struct canvas *canvas;
+			struct object_handle hndl;
+		} obj;
 		struct {
 			int idx;
 			struct stroke_store *store;
@@ -253,7 +260,7 @@ static const pfh_stroke_opts STROKE_OPTS = {
 };
 
 static struct drawit_ctx g_drawit = {
-	.gfx = { 
+	.gfx = {
 		.cam = { .zoom = 1.0f, .zoom_frac = 0.1f }
 	}
 };
@@ -332,7 +339,7 @@ void stroke_store_begin(struct stroke_store *store, const color *colors)
 		.vertex_idx   = store->pfh_vertex_buf.count, 
 		.vertex_count = 0,
 		.colors       = colors,
-		.deleted      = false,
+		.obj.deleted      = false,
 	});
 	store->desc_da_max_count = store->desc_da->count;
 }
@@ -378,11 +385,6 @@ void stroke_store_append_points(struct stroke_store *store, const struct pen_pt 
 	stroke_store_render_last(store);
 }
 
-void stroke_store_mark_delete(struct stroke_store *store, int idx, bool deleted)
-{
-	store->desc_da->elems[idx].deleted = deleted;
-}
-
 void stroke_store_delete_last(struct stroke_store *store)
 {
 	struct stroke_desc *s = DA_LAST(store->desc_da);
@@ -409,40 +411,57 @@ float stroke_store_dist(const struct stroke_store *store, int idx, vec2 v)
 {
 	const struct stroke_desc *s = store->desc_da->elems + idx;
 	const struct pen_pt *s_inputs = store->input_da->elems + s->input_idx;
-	float closest_dist2 = FLT_MAX;
+	float nearest_dist2 = FLT_MAX;
 	float dist2;
 	size_t i;
 
 	for (i = 0; i < s->input_count; i++) {
 		dist2 = vec2_dist2(v, s_inputs[i].coord);
-		if (dist2 < closest_dist2)
-			closest_dist2 = dist2;
+		if (dist2 < nearest_dist2)
+			nearest_dist2 = dist2;
 	}
-	return closest_dist2;
+	return nearest_dist2;
 }
 
-int stroke_store_closest(const struct stroke_store *store, vec2 v)
+int stroke_store_nearest(const struct stroke_store *store, vec2 v, float *dist2_out)
 {
-	size_t closest_stroke_idx = -1;
-	float closest_dist2 = FLT_MAX;
+	size_t nearest_stroke_idx = -1;
+	float nearest_dist2 = FLT_MAX;
 	float dist2;
 	size_t i;
 
 	for (i = 0; i < store->desc_da->count; i++) {
-		if (store->desc_da->elems[i].deleted)
+		if (store->desc_da->elems[i].obj.deleted)
 			continue;
 		if (!rect_contains(store->desc_da->elems[i].obj.bounds, v))
 			continue;
 		dist2 = stroke_store_dist(store, i, v);
-		if (dist2 >= closest_dist2)
+		if (dist2 >= nearest_dist2)
 			continue;
-		closest_dist2 = dist2;
-		closest_stroke_idx = i;
+		nearest_dist2 = dist2;
+		nearest_stroke_idx = i;
 	}
-	return closest_stroke_idx;
+	if (dist2_out) *dist2_out = nearest_dist2;
+	return nearest_stroke_idx;
 }
 
 /* CANVAS: TEXT */
+struct text_obj text_obj_create(const color *colors, int font_handle, float font_size, vec2 pos)
+{
+	const float LEADING_RATIO = 1.2f;
+
+	return (struct text_obj) {
+		.obj.pos = pos,
+		.obj.bounds = BOUNDS_INIT,
+
+		.font_handle = font_handle,
+		.font_size = font_size,
+		.line_height = font_size * LEADING_RATIO,
+		.colors = colors,
+		.buf = gapbuf_create(GAPBUF_INITIAL_ALLOC),
+	};
+}
+
 void text_store_print(const struct text_store *store)
 {
 	size_t i;
@@ -466,45 +485,94 @@ void text_store_print(const struct text_store *store)
 	
 }
 
-struct text_obj text_obj_create(const color *colors, int font_handle, float font_size, vec2 pos)
+static void nvg_fontsize_ctx(NVGcontext *ctx, const struct text_obj *txt);
+void text_obj_update_bounds(struct text_obj *txt, struct graphic_ctx *gfx)
 {
-	const float LEADING_RATIO = 1.2f;
+	const struct gapbuf *buf = txt->buf;
+	size_t start = 0, i = 0;
+	float x = 0.0f, max_w = 0.0f;
+	float h = txt->line_height;
 
-	return (struct text_obj) {
-		.obj.pos = pos,
-		.obj.bounds = BOUNDS_INIT,
+	nvg_fontsize_ctx(gfx->vg, txt);
 
-		.font_handle = font_handle,
-		.font_size = font_size,
-		.line_height = font_size * LEADING_RATIO,
-		.colors = colors,
-		.buf = gapbuf_create(GAPBUF_INITIAL_ALLOC),
+	for (;;) {
+		if (i >= buf->capacity) {
+			x += nvgTextBounds(gfx->vg, x, 0, buf->data + start, buf->data + i, NULL);
+			if (x > max_w) max_w = x;
+			break;
+		}
+		if (i == buf->gap_start && buf->gap_start != buf->gap_end) {
+			x += nvgTextBounds(gfx->vg, x, 0, buf->data + start, buf->data + i, NULL);
+			start = i = buf->gap_end;
+			continue;
+		}
+		if (buf->data[i] == '\n') {
+			x += nvgTextBounds(gfx->vg, x, 0, buf->data + start, buf->data + i, NULL);
+			if (x > max_w) max_w = x;
+
+			start = i + 1;
+			h += txt->line_height;
+			x = 0.0f;
+		}
+		i++;
+	}
+
+	txt->obj.bounds = (rect) {
+		.x0 = txt->obj.pos.x,
+		.y0 = txt->obj.pos.y - h,
+		.x1 = txt->obj.pos.x + max_w,
+		.y1 = txt->obj.pos.y,
 	};
+	txt->bounds_dirty = 0;
 }
+
+void text_obj_insert(struct text_obj *txt, unsigned char c)
+{
+	gapbuf_insert(&txt->buf, c);
+	txt->bounds_dirty = 1;
+}
+
+void text_obj_backspace(struct text_obj *txt)
+{
+	gapbuf_delete(txt->buf);
+	txt->bounds_dirty = 1;
+}
+
+void text_obj_cursor(struct text_obj *txt, int dir) { gapbuf_open(txt->buf, txt->buf->gap_start+dir); }
 
 static inline void text_store_append(struct text_store *store, const color *colors, int font_handle, float font_size, vec2 pos)
 {
 	store->text_da = da_text_obj_append(store->text_da, text_obj_create(colors, font_handle, font_size, pos));
 }
 
-void text_store_edit(struct text_store *store, struct pen_pt pt);
-float text_store_dist(const struct text_store *store, int text_idx, vec2 v);
-int text_store_closest_idx(const struct text_store *store, vec2 v);
-
-void text_store_delete(struct text_store *store, int idx)
+int text_store_hit(const struct text_store *store, vec2 v)
 {
-	store->text_da = da_text_obj_swppop(store->text_da, idx);
+	size_t i;
+
+	for (i = 0; i < store->text_da->count; i++) {
+		if (store->text_da->elems[i].obj.deleted) continue;
+		if (!rect_contains(store->text_da->elems[i].obj.bounds, v))
+			continue;
+		return i;
+	}
+	return -1;
 }
 
 /* CANVAS: GENERAL OBJ FUNC */
-void canvas_delete_object(struct canvas *canvas, struct object_handle hndl)
+struct object_data *canvas_object_get(const struct canvas *canvas, struct object_handle hndl)
 {
-	switch(hndl.kind) {
-	case OBJECT_KIND_STROKE: stroke_store_mark_delete(&canvas->stroke_store, hndl.id, true); break;
-	case OBJECT_KIND_TEXT: text_store_delete(&canvas->text_store, hndl.id); break;
-	case OBJECT_KIND_GROUP: puts("group unimplemented"); break;
-	default: puts("What"); break;
+	switch (hndl.kind) {
+	case OBJECT_KIND_STROKE: return &canvas->stroke_store.desc_da->elems[hndl.id].obj;
+	case OBJECT_KIND_TEXT: return &canvas->text_store.text_da->elems[hndl.id].obj;
+	case OBJECT_KIND_GROUP: return NULL;
+	default: return NULL;
 	}
+}
+
+void canvas_object_set_deleted(struct canvas *canvas, struct object_handle hndl, bool deleted)
+{
+	struct object_data *obj = canvas_object_get(canvas, hndl);
+	obj->deleted = deleted;
 }
 
 /* ==============================
@@ -514,7 +582,7 @@ void canvas_delete_object(struct canvas *canvas, struct object_handle hndl)
 void cmd_forget(struct cmd *cmd)
 {
 	switch (cmd->type) {
-	case CMD_STROKE_DELETE: break;
+	case CMD_OBJECT_DELETE: break;
 	case CMD_STROKE_CREATE: break;
 	default: break;
 	}
@@ -524,8 +592,8 @@ void cmd_forget(struct cmd *cmd)
 void cmd_undo(struct cmd c)
 {
 	switch (c.type) {
-	case CMD_STROKE_DELETE:
-		stroke_store_mark_delete(c.v.stroke.store, c.v.stroke.idx, false);
+	case CMD_OBJECT_DELETE:
+		canvas_object_set_deleted(c.v.obj.canvas, c.v.obj.hndl, false);
 		break;
 	case CMD_STROKE_CREATE:
 		stroke_store_delete_last(c.v.stroke.store);
@@ -537,8 +605,8 @@ void cmd_undo(struct cmd c)
 void cmd_redo(struct cmd c)
 {
 	switch (c.type) {
-	case CMD_STROKE_DELETE:
-		stroke_store_mark_delete(c.v.stroke.store, c.v.stroke.idx, true);
+	case CMD_OBJECT_DELETE:
+		canvas_object_set_deleted(c.v.obj.canvas, c.v.obj.hndl, true);
 		break;
 	case CMD_STROKE_CREATE:
 		stroke_store_restore_last(c.v.stroke.store);
@@ -560,12 +628,12 @@ struct cmd cmd_stroke_create(struct stroke_store *store, const color *colors)
 	return cmd;
 }
 
-struct cmd cmd_stroke_delete(struct stroke_store *store, int idx)
+struct cmd cmd_object_delete(struct canvas *canvas, struct object_handle hndl)
 {
 	struct cmd cmd;
-	cmd.type = CMD_STROKE_DELETE;
-	cmd.v.stroke.store = store;
-	cmd.v.stroke.idx = idx;
+	cmd.type = CMD_OBJECT_DELETE;
+	cmd.v.obj.canvas = canvas;
+	cmd.v.obj.hndl = hndl;
 	return cmd;
 }
 
@@ -683,6 +751,7 @@ void mode_normal_event(const sapp_event *e)
 {
 	struct da_object_handle *selection_da = g_drawit.selection_da;
 	struct canvas *canvas = &g_drawit.canvas;
+	struct cmd_hist *hist = &g_drawit.hist;
 	struct pen *pen = &g_drawit.pen;
 	size_t i;
 
@@ -760,8 +829,10 @@ void mode_normal_event(const sapp_event *e)
 
 		if (e->key_code == SAPP_KEYCODE_X) {
 			for (i = 0; i < selection_da->count; i++) {
-				canvas_delete_object(canvas, selection_da->elems[i]);
+				canvas_object_set_deleted(canvas, selection_da->elems[i], true);
+				cmd_hist_record(hist, cmd_object_delete(canvas, selection_da->elems[i]));
 			}
+			selection_da->count = 0;
 		}
 
 		break;
@@ -772,6 +843,7 @@ void mode_normal_event(const sapp_event *e)
 void mode_switch_normal(void)
 {
 	g_drawit.mode = MODE_NORMAL;
+	g_drawit.gfx.mouse.hide = false;
 	sapp_show_mouse(false);
 }
 
@@ -801,12 +873,6 @@ void mode_draw_stroke_end(struct stroke_store *store, struct cmd_hist *hist)
 	cmd_hist_record(hist, cmd_stroke_create(store, desc->colors));
 }
 
-void mode_draw_delete(struct stroke_store *store, int idx, struct cmd_hist *hist)
-{
-	stroke_store_mark_delete(store, idx, true);
-	cmd_hist_record(hist, cmd_stroke_delete(store, idx));
-}
-
 void mode_draw_event(const sapp_event *e)
 {
 	struct cmd_hist *hist = &g_drawit.hist;
@@ -833,6 +899,8 @@ void mode_switch_draw(void)
 	struct pen *pen = &g_drawit.pen;
 
 	if (status->len) status->len = 0;
+
+	g_drawit.gfx.mouse.hide = false;
 	g_drawit.mode = MODE_DRAW;
 	mode_draw_stroke_begin(&canvas->stroke_store, pen->curr_pt, *pen->active_colors);
 	sapp_show_mouse(false);
@@ -903,6 +971,7 @@ void mode_command_event(const sapp_event *e)
 void mode_switch_command(void)
 {
 	g_drawit.mode = MODE_COMMAND;
+	g_drawit.gfx.mouse.hide = true;
 	status_line_set(&g_drawit.status_line, ":");
 	sapp_show_mouse(true);
 }
@@ -912,42 +981,49 @@ void mode_switch_command(void)
 
 void mode_text_event(const sapp_event *e)
 {
+	struct graphic_ctx *gfx = &g_drawit.gfx;
 	struct text_obj *t = g_drawit.text_in_edit;
 
-	if (!t) return;
+	assert(t);
 
-	if (e->type == SAPP_EVENTTYPE_CHAR)
-		gapbuf_insert(&t->buf, (unsigned char)e->char_code);
+	if (e->type == SAPP_EVENTTYPE_CHAR) {
+		text_obj_insert(t, (unsigned char)e->char_code);
+	}
 
 	if (e->type != SAPP_EVENTTYPE_KEY_DOWN)
 		return;
 
 	switch (e->key_code) {
 	case SAPP_KEYCODE_LEFT:
-		gapbuf_open(t->buf, t->buf->gap_start-1);
+		text_obj_cursor(t, -1);
 		break;
 	case SAPP_KEYCODE_RIGHT:
-		gapbuf_open(t->buf, t->buf->gap_start+1);
+		text_obj_cursor(t, 1);
 		break;
 	case SAPP_KEYCODE_UP:
 		break;
 	case SAPP_KEYCODE_DOWN:
 		break;
 	case SAPP_KEYCODE_BACKSPACE:
-		gapbuf_delete(t->buf);
+		text_obj_backspace(t);
 		break;
 	case SAPP_KEYCODE_ENTER:
-		gapbuf_insert(&t->buf, (unsigned char)'\n');
+		text_obj_insert(t, '\n');
 		break;
 	case SAPP_KEYCODE_ESCAPE:
-		mode_switch_draw();
+		mode_switch_normal();
 		break;
 	default: break;
+	}
+
+	if (t->bounds_dirty) {
+		text_obj_update_bounds(t, gfx);
 	}
 }
 
 void mode_switch_text(void)
 {
+	g_drawit.gfx.mouse.hide = true;
 	g_drawit.mode = MODE_TEXT;
 	sapp_show_mouse(true);
 }
@@ -1022,6 +1098,20 @@ void draw_text_cursor_overlay(struct graphic_ctx *gfx, const struct text_obj *tx
 	nvgText(gfx->vg, pos.x, pos.y, c, c+1); /* I give up messing with GlobalCompositeOperations */
 }
 
+void draw_obj_bounds(struct graphic_ctx *gfx, const struct object_data *obj)
+{
+	nvgBeginPath(gfx->vg);
+	nvgRect(gfx->vg,
+		obj->bounds.x0,
+		obj->bounds.y0,
+		obj->bounds.x1 - obj->bounds.x0,
+		obj->bounds.y1 - obj->bounds.y0
+	);
+	nvgStrokeColor(gfx->vg, nvgRGBA(0, 255, 0, 255));
+	nvgStrokeWidth(gfx->vg, 2.0f);
+	nvgStroke(gfx->vg);
+}
+
 void draw_text(struct graphic_ctx *gfx, const struct text_obj *txt, bool draw_cursor)
 {
 	const struct gapbuf *buf = txt->buf;
@@ -1071,11 +1161,23 @@ void draw_text_store(struct graphic_ctx *gfx, const struct text_store *store, co
 	size_t i;
 
 	for (i = 0; i < store->text_da->count; i++) {
+		if (store->text_da->elems[i].obj.deleted) continue;
 		draw_text(
 			gfx,
 			store->text_da->elems + i, 
 			g_drawit.mode == MODE_TEXT && store->text_da->elems + i == text_in_edit 
 		);
+	}
+}
+
+void draw_selected_bounds(struct graphic_ctx *gfx, const struct canvas *canvas, const struct da_object_handle *selects)
+{
+	struct object_data *obj;
+	size_t i;
+
+	for (i = 0; i < selects->count; i++) { 
+		obj = canvas_object_get(canvas, selects->elems[i]);
+		draw_obj_bounds(gfx, obj);
 	}
 }
 
@@ -1097,7 +1199,7 @@ void draw_stroke_store(struct graphic_ctx *gfx, struct stroke_store *store)
 
 	for (i = 0; i < store->desc_da->count; i++) {
 		s = store->desc_da->elems + i;
-		if (s->deleted)
+		if (s->obj.deleted)
 			continue;
 		if (s->vertex_count < 3) /* shouldn't happen, a dot is 13 segs */
 			continue;
@@ -1124,7 +1226,7 @@ void draw_stroke_store(struct graphic_ctx *gfx, struct stroke_store *store)
 /*
 void draw_selection(struct da_object_handle *objs)
 {
-	tmp = stroke_store_closest(store, gfx->mouse.world);
+	tmp = stroke_store_nearest(store, gfx->mouse.world);
 	if (tmp == -1)
 		return;
 	draw_rect(gfx, store->desc_da->elems[tmp].obj.bounds);
@@ -1218,6 +1320,44 @@ void event_pen(const sapp_event *e)
 	}
 }
 
+void event_select_nearest(const sapp_event *e)
+{
+	struct da_object_handle *selection = g_drawit.selection_da;
+	struct mouse *mouse = &g_drawit.gfx.mouse;
+	struct canvas *canvas = &g_drawit.canvas;
+	struct object_handle hndl;
+
+	(void)e;
+
+	hndl.kind = OBJECT_KIND_TEXT;
+	hndl.id = text_store_hit(&canvas->text_store, mouse->world);
+
+	if (hndl.id == -1) {
+		hndl.kind = OBJECT_KIND_STROKE;
+		hndl.id = stroke_store_nearest(&canvas->stroke_store, mouse->world, NULL);
+	}
+
+	if (hndl.id == -1) {
+		selection->count = 0;
+		return;
+	}
+
+	if (!selection->count) {
+		g_drawit.selection_da = da_object_handle_append_empty(g_drawit.selection_da, 1);
+	} else {
+		selection->count = 1;
+	}
+	selection->elems[0] = hndl;
+}
+
+void event_select(const sapp_event *e)
+{
+	switch(g_drawit.select_mode) {
+	case SELECT_NEAREST: event_select_nearest(e); break;
+	default: return;
+	}
+}
+
 void event(const sapp_event *e)
 {
 	struct graphic_ctx *gfx = &g_drawit.gfx;
@@ -1237,6 +1377,7 @@ void event(const sapp_event *e)
 	}
 
 	event_pen(e);
+	event_select(e);
 
 	switch (g_drawit.mode) {
 	case MODE_NORMAL:
@@ -1278,7 +1419,10 @@ void frame(void)
 
 			draw_stroke_store(gfx, &canvas->stroke_store);
 			draw_text_store(gfx, &canvas->text_store, g_drawit.text_in_edit);
+			draw_selected_bounds(gfx, canvas, g_drawit.selection_da);
+
 		nvgRestore(gfx->vg);
+
 		if (!gfx->mouse.hide && !gfx->mouse.is_outside_frame) {
 			nvgBeginPath(gfx->vg);
 				nvgCircle(gfx->vg, roundf(mouse->screen.x), round(mouse->screen.y), cam->zoom*STROKE_OPTS.size/1.5);
