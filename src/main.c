@@ -79,7 +79,7 @@ struct stroke_store {
 	struct da_pen_pt      *input_da;
 	pfh_vec2_buf           pfh_vertex_buf;
 	struct da_stroke_desc *desc_da;
-	size_t                 desc_da_max_count;
+	size_t                 desc_max_count;
 };
 
 struct text_obj {
@@ -99,6 +99,7 @@ struct text_obj {
 
 struct text_store {
 	struct da_text_obj *text_da;
+	size_t text_max_count;
 };
 
 struct canvas {
@@ -108,10 +109,9 @@ struct canvas {
 
 enum cmd_type {
 	CMD_NONE,
-
 	CMD_OBJECT_DELETE,
-
 	CMD_STROKE_CREATE,
+	CMD_TEXT_CREATE,
 };
 
 struct cmd {
@@ -122,10 +122,11 @@ struct cmd {
 			struct object_handle hndl;
 		} obj;
 		struct {
-			int idx;
 			struct stroke_store *store;
-			const color         *colors;
 		} stroke;
+		struct {
+			struct text_store *store;
+		} text;
 	} v;
 };
 
@@ -341,7 +342,7 @@ void stroke_store_begin(struct stroke_store *store, const color *colors)
 		.colors       = colors,
 		.obj.deleted      = false,
 	});
-	store->desc_da_max_count = store->desc_da->count;
+	store->desc_max_count = store->desc_da->count;
 }
 
 void stroke_store_render_last(struct stroke_store *store)
@@ -398,7 +399,7 @@ void stroke_store_restore_last(struct stroke_store *store)
 {
 	struct stroke_desc *s;
 
-	assert(store->desc_da_max_count > store->desc_da->count);
+	assert(store->desc_max_count > store->desc_da->count);
 
 	store->desc_da->count++;
 	s = DA_LAST(store->desc_da);
@@ -543,6 +544,7 @@ void text_obj_cursor(struct text_obj *txt, int dir) { gapbuf_open(txt->buf, txt-
 static inline void text_store_append(struct text_store *store, const color *colors, int font_handle, float font_size, vec2 pos)
 {
 	store->text_da = da_text_obj_append(store->text_da, text_obj_create(colors, font_handle, font_size, pos));
+	store->text_max_count = store->text_da->count;
 }
 
 int text_store_hit(const struct text_store *store, vec2 v)
@@ -556,6 +558,17 @@ int text_store_hit(const struct text_store *store, vec2 v)
 		return i;
 	}
 	return -1;
+}
+
+void text_store_delete_last(const struct text_store *store)
+{
+	store->text_da->count--;
+}
+
+void text_store_restore_last(const struct text_store *store)
+{
+	assert(store->text_da->count < store->text_max_count);
+	store->text_da->count++;
 }
 
 /* CANVAS: GENERAL OBJ FUNC */
@@ -598,6 +611,9 @@ void cmd_undo(struct cmd c)
 	case CMD_STROKE_CREATE:
 		stroke_store_delete_last(c.v.stroke.store);
 		break;
+	case CMD_TEXT_CREATE:
+		text_store_delete_last(c.v.text.store);
+		break;
 	default: break;
 	}
 }
@@ -611,20 +627,29 @@ void cmd_redo(struct cmd c)
 	case CMD_STROKE_CREATE:
 		stroke_store_restore_last(c.v.stroke.store);
 		break;
+	case CMD_TEXT_CREATE:
+		text_store_restore_last(c.v.text.store);
+		break;
 	default: break;
 	}
 }
 
 /* CMD IMPL */
-struct cmd cmd_stroke_create(struct stroke_store *store, const color *colors)
+struct cmd cmd_stroke_create(struct stroke_store *store)
 {
 	struct cmd cmd;
 
 	cmd.type = CMD_STROKE_CREATE;
 	cmd.v.stroke.store = store;
-	cmd.v.stroke.idx = store->desc_da->count-1;
-	cmd.v.stroke.colors = colors;
 
+	return cmd;
+}
+
+struct cmd cmd_text_create(struct text_store *store)
+{
+	struct cmd cmd;
+	cmd.type = CMD_TEXT_CREATE;
+	cmd.v.text.store = store;
 	return cmd;
 }
 
@@ -680,7 +705,7 @@ static void cmd_hist_redo(struct cmd_hist *hist)
 static void mode_switch_normal(void);
 static void mode_switch_draw(void);
 static void mode_switch_command(void);
-static void mode_switch_text(void);
+static void mode_switch_text(struct text_obj *edit);
 
 /* MODE: NORMAL */
 void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
@@ -723,10 +748,6 @@ void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
 
 int mode_normal_event_transitions(const sapp_event *e)
 {
-	struct pen *pen = &g_drawit.pen;
-	struct graphic_ctx *gfx = &g_drawit.gfx;
-	struct canvas *canvas = &g_drawit.canvas;
-
 	switch (e->type) {
 	case SAPP_EVENTTYPE_CHAR: 
 		if (e->char_code == ':') {
@@ -734,11 +755,7 @@ int mode_normal_event_transitions(const sapp_event *e)
 			break;
 		}
 		if (e->char_code == 'i') {
-
-			text_store_append(&canvas->text_store, *pen->active_colors, gfx->font_handle, FONT_SIZE_DEFAULT, gfx->mouse.world);
-			g_drawit.text_in_edit = DA_LAST(canvas->text_store.text_da);
-
-			mode_switch_text();
+			mode_switch_text(NULL);
 			return 1;
 		}
 		break;
@@ -869,8 +886,7 @@ void mode_draw_stroke_try_append(struct stroke_store *store, struct pen_pt pt)
 
 void mode_draw_stroke_end(struct stroke_store *store, struct cmd_hist *hist)
 {
-	struct stroke_desc *desc = DA_LAST(store->desc_da);
-	cmd_hist_record(hist, cmd_stroke_create(store, desc->colors));
+	cmd_hist_record(hist, cmd_stroke_create(store));
 }
 
 void mode_draw_event(const sapp_event *e)
@@ -1021,8 +1037,21 @@ void mode_text_event(const sapp_event *e)
 	}
 }
 
-void mode_switch_text(void)
+void mode_switch_text(struct text_obj *edit)
 {
+	struct text_store *store = &g_drawit.canvas.text_store;
+	struct cmd_hist *hist = &g_drawit.hist;
+	const color *colors = *g_drawit.pen.active_colors;
+	struct graphic_ctx *gfx = &g_drawit.gfx;
+
+	if (edit) {
+		g_drawit.text_in_edit = edit;
+	} else {
+		text_store_append(store, colors, gfx->font_handle, FONT_SIZE_DEFAULT, gfx->mouse.world);
+		g_drawit.text_in_edit = DA_LAST(store->text_da);
+		cmd_hist_record(hist, cmd_text_create(store));
+	}
+
 	g_drawit.gfx.mouse.hide = true;
 	g_drawit.mode = MODE_TEXT;
 	sapp_show_mouse(true);
