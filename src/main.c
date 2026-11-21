@@ -11,6 +11,7 @@
 #define PFH_IMPLEMENTATION
 #include <perfect-freehand/pfh.h>
 
+#include <assert.h>
 #include <math.h>
 #include <stdint.h>
 
@@ -78,6 +79,7 @@ struct stroke_store {
 	struct da_pen_pt      *input_da;
 	pfh_vec2_buf           pfh_vertex_buf;
 	struct da_stroke_desc *desc_da;
+	size_t                 desc_da_max_count;
 };
 
 struct text_obj {
@@ -111,11 +113,10 @@ enum cmd_type {
 
 struct cmd {
 	enum cmd_type type;
-	union {
-		struct cmd_stroke_data {
+	union ctx {
+		struct {
 			int idx;
 			struct stroke_store *store;
-			struct da_pen_pt    *pen_pt_da; 
 			const color         *colors;
 		} stroke;
 	} v;
@@ -183,12 +184,6 @@ struct pen {
 	const color **active_colors;
 };
 
-struct cmd_hist_state {
-	struct cmd buf;
-	struct cmd_hist hist;
-	long save_idx;
-};
-
 struct status_line {
 	char buf[STATUS_LINE_MAX];
 	size_t len;
@@ -216,7 +211,7 @@ struct drawit_ctx {
 	struct text_obj         *text_in_edit;
 
 	struct canvas            canvas;
-	struct cmd_hist_state    cmd_hist_state;
+	struct cmd_hist          hist;
 };
 
 /* GLOBALS */
@@ -266,7 +261,7 @@ static struct drawit_ctx g_drawit = {
 /* HELPERS */
 static inline vec2 screen_to_world(const struct graphic_ctx *gfx, vec2 screen)
 {
-	return (vec2){
+	return (vec2) {
 		.x = ( (screen.x - gfx->screen_width/2) / gfx->cam.zoom) + gfx->cam.pos.x,
 		.y = ( (gfx->screen_height/2 - screen.y) / gfx->cam.zoom) + gfx->cam.pos.y,
 	};
@@ -339,6 +334,7 @@ void stroke_store_begin(struct stroke_store *store, const color *colors)
 		.colors       = colors,
 		.deleted      = false,
 	});
+	store->desc_da_max_count = store->desc_da->count;
 }
 
 void stroke_store_render_last(struct stroke_store *store)
@@ -394,6 +390,19 @@ void stroke_store_delete_last(struct stroke_store *store)
 	store->input_da->count = s->input_idx;
 	store->pfh_vertex_buf.count = s->vertex_idx;
 	store->desc_da->count--;
+}
+
+void stroke_store_restore_last(struct stroke_store *store)
+{
+	struct stroke_desc *s;
+
+	assert(store->desc_da_max_count > store->desc_da->count);
+
+	store->desc_da->count++;
+	s = DA_LAST(store->desc_da);
+
+	store->input_da->count = s->input_idx + s->input_count;
+	store->pfh_vertex_buf.count = s->vertex_idx + s->vertex_count;
 }
 
 float stroke_store_dist(const struct stroke_store *store, int idx, vec2 v)
@@ -505,11 +514,8 @@ void canvas_delete_object(struct canvas *canvas, struct object_handle hndl)
 void cmd_forget(struct cmd *cmd)
 {
 	switch (cmd->type) {
-	case CMD_STROKE_DELETE:
-		break;
-	case CMD_STROKE_CREATE:
-		free(cmd->v.stroke.pen_pt_da);
-		break;
+	case CMD_STROKE_DELETE: break;
+	case CMD_STROKE_CREATE: break;
 	default: break;
 	}
 	cmd->type = CMD_NONE;
@@ -532,24 +538,36 @@ void cmd_redo(struct cmd c)
 {
 	switch (c.type) {
 	case CMD_STROKE_DELETE:
-		stroke_store_mark_delete(
-			c.v.stroke.store,
-			c.v.stroke.idx,
-			true
-		);
+		stroke_store_mark_delete(c.v.stroke.store, c.v.stroke.idx, true);
 		break;
 	case CMD_STROKE_CREATE:
-		stroke_store_begin(c.v.stroke.store, c.v.stroke.colors);
-		stroke_store_append_points(
-			c.v.stroke.store,
-			c.v.stroke.pen_pt_da->elems,
-			c.v.stroke.pen_pt_da->count
-		);
+		stroke_store_restore_last(c.v.stroke.store);
 		break;
 	default: break;
 	}
 }
 
+/* CMD IMPL */
+struct cmd cmd_stroke_create(struct stroke_store *store, const color *colors)
+{
+	struct cmd cmd;
+
+	cmd.type = CMD_STROKE_CREATE;
+	cmd.v.stroke.store = store;
+	cmd.v.stroke.idx = store->desc_da->count-1;
+	cmd.v.stroke.colors = colors;
+
+	return cmd;
+}
+
+struct cmd cmd_stroke_delete(struct stroke_store *store, int idx)
+{
+	struct cmd cmd;
+	cmd.type = CMD_STROKE_DELETE;
+	cmd.v.stroke.store = store;
+	cmd.v.stroke.idx = idx;
+	return cmd;
+}
 
 /* CMD_HIST */
 void cmd_hist_record(struct cmd_hist *hist, struct cmd cmd)
@@ -663,7 +681,6 @@ int mode_normal_event_transitions(const sapp_event *e)
 
 void mode_normal_event(const sapp_event *e)
 {
-	struct cmd_hist_state *cmd_hist_state = &g_drawit.cmd_hist_state;
 	struct da_object_handle *selection_da = g_drawit.selection_da;
 	struct canvas *canvas = &g_drawit.canvas;
 	struct pen *pen = &g_drawit.pen;
@@ -713,11 +730,11 @@ void mode_normal_event(const sapp_event *e)
 
 		case SAPP_KEYCODE_Z:
 			if (e->modifiers & SAPP_MODIFIER_CTRL)
-				cmd_hist_undo(&cmd_hist_state->hist);
+				cmd_hist_undo(&g_drawit.hist);
 			break;
 		case SAPP_KEYCODE_R:
 			if (e->modifiers & SAPP_MODIFIER_CTRL)
-				cmd_hist_redo(&cmd_hist_state->hist);
+				cmd_hist_redo(&g_drawit.hist);
 			break;
 
 		case SAPP_KEYCODE_X:
@@ -726,7 +743,7 @@ void mode_normal_event(const sapp_event *e)
 			break;
 
 		case SAPP_KEYCODE_M:
-			cmd_hist_state->save_idx = cmd_hist_state->hist.cursor;
+			/* g_drawit.save_idx = g_drawit.hist.cursor; */
 			break;
 		default: break;
 		}
@@ -760,25 +777,13 @@ void mode_switch_normal(void)
 
 /* MODE: DRAW */
 
-void mode_draw_stroke_begin(struct stroke_store *store, struct pen_pt pt, const color *colors, struct cmd *cmd)
+void mode_draw_stroke_begin(struct stroke_store *store, struct pen_pt pt, const color *colors)
 {
 	stroke_store_begin(store, colors);
 	stroke_store_append_point(store, pt);
-
-
-	if (cmd->type != CMD_NONE)
-		puts("Warning: something ain't right during stroke begin. cmd->is not NONE.");
-	cmd->type = CMD_STROKE_CREATE;
-
-	cmd->v.stroke.store = store;
-	cmd->v.stroke.idx = store->desc_da->count-1;
-	cmd->v.stroke.colors = colors;
-	cmd->v.stroke.pen_pt_da = da_pen_pt_create(DA_INITIAL_CAPACITY);
-
-	cmd->v.stroke.pen_pt_da = da_pen_pt_append(cmd->v.stroke.pen_pt_da, pt);
 }
 
-void mode_draw_stroke_try_append(struct stroke_store *store, struct pen_pt pt, struct cmd *cmd)
+void mode_draw_stroke_try_append(struct stroke_store *store, struct pen_pt pt)
 {
 	const int MIN_PX = 2;
 	static struct pen_pt last_valid_pt = PEN_PT_INIT;
@@ -787,51 +792,35 @@ void mode_draw_stroke_try_append(struct stroke_store *store, struct pen_pt pt, s
 		return;
 	last_valid_pt = pt;
 
-	if (cmd->type != CMD_STROKE_CREATE)
-		puts("Warning: something ain't right during stroke try append. cmd buffer is not STROKE_CREATE.");
 	stroke_store_append_point(store, pt);
-	cmd->v.stroke.pen_pt_da = da_pen_pt_append(cmd->v.stroke.pen_pt_da, pt);
 }
 
-void mode_draw_stroke_end(struct cmd_hist_state *state)
+void mode_draw_stroke_end(struct stroke_store *store, struct cmd_hist *hist)
 {
-	cmd_hist_record(&state->hist, state->buf);
-	state->buf.type = CMD_NONE;
+	struct stroke_desc *desc = DA_LAST(store->desc_da);
+	cmd_hist_record(hist, cmd_stroke_create(store, desc->colors));
 }
 
-void mode_draw_delete(struct stroke_store *store, int idx, struct cmd_hist *hist, struct cmd cmd)
+void mode_draw_delete(struct stroke_store *store, int idx, struct cmd_hist *hist)
 {
-	stroke_store_mark_delete(
-		store, 
-		idx,
-		true
-	);
-
-	if (cmd.type != CMD_NONE)
-		puts("Warning: Something ain't right during stroke mark delete. cmd buffer is not NONE.");
-
-	cmd.type = CMD_STROKE_DELETE;
-	cmd.v.stroke.store = store;
-	cmd.v.stroke.idx = idx;
-
-	cmd_hist_record(hist, cmd);
-	cmd.type = CMD_NONE;
+	stroke_store_mark_delete(store, idx, true);
+	cmd_hist_record(hist, cmd_stroke_delete(store, idx));
 }
 
 void mode_draw_event(const sapp_event *e)
 {
-	struct cmd_hist_state *cmd_hist_state = &g_drawit.cmd_hist_state;
+	struct cmd_hist *hist = &g_drawit.hist;
 	struct canvas *canvas = &g_drawit.canvas;
 	struct pen *pen = &g_drawit.pen;
 
 	switch (e->type) {
 	/* Mouse */
 	case SAPP_EVENTTYPE_MOUSE_UP:
-		mode_draw_stroke_end(cmd_hist_state);
+		mode_draw_stroke_end(&canvas->stroke_store, hist);
 		mode_switch_normal();
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
-		mode_draw_stroke_try_append(&canvas->stroke_store, pen->curr_pt, &cmd_hist_state->buf);
+		mode_draw_stroke_try_append(&canvas->stroke_store, pen->curr_pt);
 		break;
 	default: break;
 	}
@@ -839,14 +828,13 @@ void mode_draw_event(const sapp_event *e)
 
 void mode_switch_draw(void)
 {
-	struct cmd_hist_state *cmd_hist_state = &g_drawit.cmd_hist_state;
 	struct canvas *canvas = &g_drawit.canvas;
 	struct status_line *status = &g_drawit.status_line;
 	struct pen *pen = &g_drawit.pen;
 
 	if (status->len) status->len = 0;
 	g_drawit.mode = MODE_DRAW;
-	mode_draw_stroke_begin(&canvas->stroke_store, pen->curr_pt, *pen->active_colors, &cmd_hist_state->buf);
+	mode_draw_stroke_begin(&canvas->stroke_store, pen->curr_pt, *pen->active_colors);
 	sapp_show_mouse(false);
 }
 
