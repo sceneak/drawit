@@ -1,6 +1,8 @@
 # Todo
-- Factor out cmd_hist_state by moving cmd buf
-- Simplify cmd by tying it to canvas state
-- General object selection 
-- General object deletion
-- Prefer struct ptr elem over vl members so NO_DISCARD isn't necessary
+[v] Clean g_drawit access & modes
+[v] Clean event calling
+[v] Clean static state
+[] Move Objects
+[] Groups
+[] Edit text
+[] Prefer struct ptr elem over vl members so NO_DISCARD isn't necessary

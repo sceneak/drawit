@@ -186,7 +186,7 @@ enum mode {
 };
 
 struct pen {
-	struct pen_pt curr_pt;
+	struct pen_pt curr_pt, last_pt;
 	const color *colors_primary;
 	const color *colors_secondary;
 	const color **active_colors;
@@ -216,7 +216,7 @@ struct drawit_ctx {
 	enum select_mode         select_mode;
 	struct da_object_handle *selection_da;
 
-	struct text_obj         *text_in_edit;
+	int                      active_text_id;
 
 	struct canvas            canvas;
 	struct cmd_hist          hist;
@@ -325,7 +325,6 @@ void stroke_store_print(const struct stroke_store *store)
 		printf("stroke_desc[%zu]\n", i);
 		printf("  input: idx %zu, count %zu\n", s->input_idx, s->input_count);
 		printf("  vertex: idx %zu, count %zu\n", s->vertex_idx, s->vertex_count);
-		printf("  colors[%d]: (%d, %d, %d, %d)\n", g_drawit.theme, s->colors[g_drawit.theme].r, s->colors[g_drawit.theme].g, s->colors[g_drawit.theme].b, s->colors[g_drawit.theme].a);
 	}
 	puts("");
 }
@@ -663,7 +662,7 @@ struct cmd cmd_object_delete(struct canvas *canvas, struct object_handle hndl)
 }
 
 /* CMD_HIST */
-void cmd_hist_record(struct cmd_hist *hist, struct cmd cmd)
+static void cmd_hist_record(struct cmd_hist *hist, struct cmd cmd)
 {
 	hist->cursor = RINGBUF_INCR(hist->cursor, ARRAY_SIZE(hist->cmds), 1);
 
@@ -676,26 +675,26 @@ void cmd_hist_record(struct cmd_hist *hist, struct cmd cmd)
 		hist->before_first = RINGBUF_INCR(hist->before_first, ARRAY_SIZE(hist->cmds), 1);
 }
 
-void cmd_hist_undo(struct cmd_hist *hist)
+static int cmd_hist_undo(struct cmd_hist *hist)
 {
 	if (hist->cursor == hist->before_first) {
-		status_line_set(&g_drawit.status_line, "Already at oldest history");
-		return;
+		return -1;
 	}
 
 	cmd_undo(hist->cmds[hist->cursor]);
 	hist->cursor = RINGBUF_DECR(hist->cursor, ARRAY_SIZE(hist->cmds), 1);
+	return 0;
 }
 
-static void cmd_hist_redo(struct cmd_hist *hist)
+static int cmd_hist_redo(struct cmd_hist *hist)
 {
 	if (hist->cursor == hist->last) {
-		status_line_set(&g_drawit.status_line, "Already at newest change");
-		return;
+		return -1;
 	}
 
 	hist->cursor = RINGBUF_INCR(hist->cursor, ARRAY_SIZE(hist->cmds), 1);
 	cmd_redo(hist->cmds[hist->cursor]);
+	return 0;
 }
 
 /* ==============================
@@ -705,7 +704,7 @@ static void cmd_hist_redo(struct cmd_hist *hist)
 static void mode_switch_normal(void);
 static void mode_switch_draw(void);
 static void mode_switch_command(void);
-static void mode_switch_text(struct text_obj *edit);
+static void mode_switch_text(int edit_id);
 
 /* MODE: NORMAL */
 void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
@@ -716,10 +715,6 @@ void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
 
 	switch(e->type) {
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
-		mouse->screen.x = e->mouse_x;
-		mouse->screen.y = e->mouse_y;
-		mouse->world = screen_to_world(gfx, mouse->screen);
-
 		if (cam->is_panning) {
 			cam->pos.x = cam->pan_pivot_self.x + (cam->pan_pivot_mouse.x - mouse->screen.x)/cam->zoom;
 			cam->pos.y = cam->pan_pivot_self.y + (mouse->screen.y - cam->pan_pivot_mouse.y)/cam->zoom;
@@ -755,7 +750,7 @@ int mode_normal_event_transitions(const sapp_event *e)
 			break;
 		}
 		if (e->char_code == 'i') {
-			mode_switch_text(NULL);
+			mode_switch_text(-1);
 			return 1;
 		}
 		break;
@@ -770,12 +765,14 @@ void mode_normal_event(const sapp_event *e)
 	struct canvas *canvas = &g_drawit.canvas;
 	struct cmd_hist *hist = &g_drawit.hist;
 	struct pen *pen = &g_drawit.pen;
+	struct status_line *status = &g_drawit.status_line;
+	struct graphic_ctx *gfx = &g_drawit.gfx;
 	size_t i;
 
 	if (mode_normal_event_transitions(e) != 0)
 		return;
 
-	mode_normal_event_camera(&g_drawit.gfx, e);
+	mode_normal_event_camera(gfx, e);
 
 	/* Handle object selection & deletion
 	 * Handle object dragging
@@ -815,17 +812,23 @@ void mode_normal_event(const sapp_event *e)
 			break;
 
 		case SAPP_KEYCODE_Z:
-			if (e->modifiers & SAPP_MODIFIER_CTRL)
-				cmd_hist_undo(&g_drawit.hist);
+			if (e->modifiers & SAPP_MODIFIER_CTRL) {
+				if (cmd_hist_undo(hist) == -1) {
+					status_line_set(status, "Already at oldest history");
+				}
+			}
 			break;
 		case SAPP_KEYCODE_R:
-			if (e->modifiers & SAPP_MODIFIER_CTRL)
-				cmd_hist_redo(&g_drawit.hist);
+			if (e->modifiers & SAPP_MODIFIER_CTRL) {
+				if (cmd_hist_redo(hist) == -1) {
+					status_line_set(status, "Already at newest change");
+				}
+			}
 			break;
 
 		case SAPP_KEYCODE_X:
 		case SAPP_KEYCODE_LEFT_SHIFT:
-			g_drawit.select_mode = SELECT_NEAREST;
+			g_drawit.select_mode = SELECT_NEAREST; /* TODO: make this a MODE itself */
 			break;
 
 		case SAPP_KEYCODE_M:
@@ -911,17 +914,17 @@ void mode_draw_event(const sapp_event *e)
 void mode_switch_draw(void)
 {
 	struct canvas *canvas = &g_drawit.canvas;
+	struct graphic_ctx *gfx = &g_drawit.gfx;
 	struct status_line *status = &g_drawit.status_line;
 	struct pen *pen = &g_drawit.pen;
 
 	if (status->len) status->len = 0;
 
-	g_drawit.gfx.mouse.hide = false;
 	g_drawit.mode = MODE_DRAW;
+	gfx->mouse.hide = false;
 	mode_draw_stroke_begin(&canvas->stroke_store, pen->curr_pt, *pen->active_colors);
 	sapp_show_mouse(false);
 }
-
 
 
 /* MODE: COMMAND */
@@ -986,9 +989,12 @@ void mode_command_event(const sapp_event *e)
 
 void mode_switch_command(void)
 {
+	struct graphic_ctx *gfx = &g_drawit.gfx;
+	struct status_line *status = &g_drawit.status_line;
+
 	g_drawit.mode = MODE_COMMAND;
-	g_drawit.gfx.mouse.hide = true;
-	status_line_set(&g_drawit.status_line, ":");
+	gfx->mouse.hide = true;
+	status_line_set(status, ":");
 	sapp_show_mouse(true);
 }
 
@@ -998,7 +1004,8 @@ void mode_switch_command(void)
 void mode_text_event(const sapp_event *e)
 {
 	struct graphic_ctx *gfx = &g_drawit.gfx;
-	struct text_obj *t = g_drawit.text_in_edit;
+	struct text_store *store = &g_drawit.canvas.text_store;
+	struct text_obj *t = store->text_da->elems + g_drawit.active_text_id;
 
 	assert(t);
 
@@ -1027,6 +1034,7 @@ void mode_text_event(const sapp_event *e)
 		text_obj_insert(t, '\n');
 		break;
 	case SAPP_KEYCODE_ESCAPE:
+		g_drawit.active_text_id = -1;
 		mode_switch_normal();
 		break;
 	default: break;
@@ -1037,19 +1045,20 @@ void mode_text_event(const sapp_event *e)
 	}
 }
 
-void mode_switch_text(struct text_obj *edit)
+void mode_switch_text(int edit_id)
 {
 	struct text_store *store = &g_drawit.canvas.text_store;
 	struct cmd_hist *hist = &g_drawit.hist;
 	const color *colors = *g_drawit.pen.active_colors;
 	struct graphic_ctx *gfx = &g_drawit.gfx;
 
-	if (edit) {
-		g_drawit.text_in_edit = edit;
+	if (edit_id > 0) {
+		g_drawit.active_text_id = edit_id;
 	} else {
 		text_store_append(store, colors, gfx->font_handle, FONT_SIZE_DEFAULT, gfx->mouse.world);
-		g_drawit.text_in_edit = DA_LAST(store->text_da);
 		cmd_hist_record(hist, cmd_text_create(store));
+
+		g_drawit.active_text_id = store->text_da->count-1;
 	}
 
 	g_drawit.gfx.mouse.hide = true;
@@ -1107,7 +1116,7 @@ static inline vec2 get_cursor_size(struct graphic_ctx *gfx, const struct text_ob
 	return (vec2) { advance, ascender - descender };
 }
 
-void draw_text_cursor_overlay(struct graphic_ctx *gfx, const struct text_obj *txt, bool local)
+void draw_text_cursor_overlay(struct graphic_ctx *gfx, const struct text_obj *txt, enum theme theme, bool local)
 {
 	vec2 offset = get_cursor_offset(gfx, txt);
 	vec2 size = get_cursor_size(gfx, txt);
@@ -1117,13 +1126,13 @@ void draw_text_cursor_overlay(struct graphic_ctx *gfx, const struct text_obj *tx
 	};
 	const char *c = txt->buf->gap_end < txt->buf->capacity ? txt->buf->data + txt->buf->gap_end : " ";
 
-	nvgFillColor(gfx->vg, color_to_NVGcolor(COLORS_CONTRAST[g_drawit.theme]));
+	nvgFillColor(gfx->vg, color_to_NVGcolor(COLORS_CONTRAST[theme]));
 	nvgBeginPath(gfx->vg);
 	nvgRect(gfx->vg, pos.x, pos.y - size.y/2, size.x, size.y); /* offset y to middle */
 	nvgFill(gfx->vg);
 
 	nvg_fontsize_ctx(gfx->vg, txt);
-	nvgFillColor(gfx->vg, color_to_NVGcolor(COLORS_BACKGROUND[g_drawit.theme]));
+	nvgFillColor(gfx->vg, color_to_NVGcolor(COLORS_BACKGROUND[theme]));
 	nvgText(gfx->vg, pos.x, pos.y, c, c+1); /* I give up messing with GlobalCompositeOperations */
 }
 
@@ -1141,7 +1150,7 @@ void draw_obj_bounds(struct graphic_ctx *gfx, const struct object_data *obj)
 	nvgStroke(gfx->vg);
 }
 
-void draw_text(struct graphic_ctx *gfx, const struct text_obj *txt, bool draw_cursor)
+void draw_text(struct graphic_ctx *gfx, const struct text_obj *txt, enum theme theme, bool draw_cursor)
 {
 	const struct gapbuf *buf = txt->buf;
 
@@ -1150,7 +1159,7 @@ void draw_text(struct graphic_ctx *gfx, const struct text_obj *txt, bool draw_cu
 	      y = 0;
 
 	nvg_fontsize_ctx(gfx->vg, txt);
-	nvgFillColor(gfx->vg, color_to_NVGcolor(txt->colors[g_drawit.theme]));
+	nvgFillColor(gfx->vg, color_to_NVGcolor(txt->colors[theme]));
 
 	nvgSave(gfx->vg);
 	nvgScale(gfx->vg, 1, -1);
@@ -1181,21 +1190,23 @@ void draw_text(struct graphic_ctx *gfx, const struct text_obj *txt, bool draw_cu
 			i++;
 		}
 		if (draw_cursor)
-			draw_text_cursor_overlay(gfx, txt, true);
+			draw_text_cursor_overlay(gfx, txt, theme, true);
 	nvgRestore(gfx->vg);
 }
 
-void draw_text_store(struct graphic_ctx *gfx, const struct text_store *store, const struct text_obj *text_in_edit)
+void draw_text_store(struct graphic_ctx *gfx,
+                     const struct text_store *store,
+                     enum theme theme,
+                     int active_text_id)
 {
 	size_t i;
 
 	for (i = 0; i < store->text_da->count; i++) {
 		if (store->text_da->elems[i].obj.deleted) continue;
-		draw_text(
-			gfx,
-			store->text_da->elems + i, 
-			g_drawit.mode == MODE_TEXT && store->text_da->elems + i == text_in_edit 
-		);
+		draw_text(gfx,
+			  store->text_da->elems + i, 
+			  theme,
+			  i == (size_t)active_text_id);
 	}
 }
 
@@ -1325,8 +1336,6 @@ void event_pen(const sapp_event *e)
 	static u64 last_move = 0;
 	double delta, vel;
 
-	static struct pen_pt last_pt = PEN_PT_INIT;
-
 	switch (e->type) {
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		gfx->mouse.screen.x = e->mouse_x;
@@ -1338,12 +1347,12 @@ void event_pen(const sapp_event *e)
 		delta = stm_sec(stm_laptime(&last_move));
 
 		pen->curr_pt.coord = gfx->mouse.world;
-		vel = ( sqrtf(vec2_dist2(pen->curr_pt.coord, last_pt.coord)) / delta );
+		vel = ( sqrtf(vec2_dist2(pen->curr_pt.coord, pen->last_pt.coord)) / delta );
 
 		pen->curr_pt.pressure = 1 - min(vel / (VELOCITY_MAX_IN * gfx->screen_dpi_scale), 1);
-		pen->curr_pt.pressure = last_pt.pressure * .75 + pen->curr_pt.pressure * .25; /* blend */
+		pen->curr_pt.pressure = pen->last_pt.pressure * .75 + pen->curr_pt.pressure * .25; /* blend */
 
-		last_pt = pen->curr_pt;
+		pen->last_pt = pen->curr_pt;
 		break;
 	default: break;
 	}
@@ -1447,7 +1456,7 @@ void frame(void)
 			nvgTranslate(gfx->vg, -cam->pos.x, -cam->pos.y);
 
 			draw_stroke_store(gfx, &canvas->stroke_store);
-			draw_text_store(gfx, &canvas->text_store, g_drawit.text_in_edit);
+			draw_text_store(gfx, &canvas->text_store, g_drawit.theme, g_drawit.active_text_id);
 			draw_selected_bounds(gfx, canvas, g_drawit.selection_da);
 
 		nvgRestore(gfx->vg);
