@@ -1,0 +1,16 @@
+# Todo
+- get deletion to work in edit mode
+
+== The Plan ==
+NORMAL: Mode where the user's object selection is cleared and is the default state to other modes like EDIT and DRAW. User has access to camera controls
+EDIT: Mode where the user selects objects to act upon. Some acts are triggered immediately (like deletion on X KEYUP), some transition to another mode while leaving the selection items intact (like DRAG). Depending on the provided edit_type (nearest,bulk,??) the selection strategy also changes.
+DRAW: Mode where the user draws freehand strokes. MOUSEUP puts the user back to NORMAL mode.
+DRAG: Mode where the user drags objects in selection_da
+TEXT: Mode where the user edits an existing text or inserts a new one if no text id -1 is supplied. ESC puts the user back to NORMAL mode.
+COMMAND: 
+
+[] Status
+[] Move Objects
+[] Groups
+[] Edit text
+[] Prefer struct ptr elem over vl members so NO_DISCARD isn't necessary

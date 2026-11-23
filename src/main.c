@@ -180,9 +180,11 @@ enum theme {
 
 enum mode {
 	MODE_NORMAL,
+	MODE_EDIT,
 	MODE_DRAW,
 	MODE_COMMAND,
 	MODE_TEXT,
+	MODE_DRAG,
 };
 
 struct pen {
@@ -197,7 +199,7 @@ struct status_line {
 	size_t len;
 };
 
-enum select_mode {
+enum select_type {
 	SELECT_NONE,
 	SELECT_NEAREST,
 	/* SELECT_BOX, */
@@ -213,7 +215,7 @@ struct drawit_ctx {
 
 	struct pen               pen;
 
-	enum select_mode         select_mode;
+	enum select_type         select_type;
 	struct da_object_handle *selection_da;
 
 	int                      active_text_id;
@@ -702,6 +704,7 @@ static int cmd_hist_redo(struct cmd_hist *hist)
  * ==============================
  */
 static void mode_switch_normal(void);
+static void mode_switch_edit(enum select_type type);
 static void mode_switch_draw(void);
 static void mode_switch_command(void);
 static void mode_switch_text(int edit_id);
@@ -761,26 +764,15 @@ int mode_normal_event_transitions(const sapp_event *e)
 
 void mode_normal_event(const sapp_event *e)
 {
-	struct da_object_handle *selection_da = g_drawit.selection_da;
-	struct canvas *canvas = &g_drawit.canvas;
 	struct cmd_hist *hist = &g_drawit.hist;
 	struct pen *pen = &g_drawit.pen;
 	struct status_line *status = &g_drawit.status_line;
 	struct graphic_ctx *gfx = &g_drawit.gfx;
-	size_t i;
 
 	if (mode_normal_event_transitions(e) != 0)
 		return;
 
 	mode_normal_event_camera(gfx, e);
-
-	/* Handle object selection & deletion
-	 * Handle object dragging
-	 * Handle object grouping
-
-	 * Move these to here
-	 * rewire draw function to be is_drawing replacement
-	 */
 
 	switch (e->type) {
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
@@ -828,7 +820,7 @@ void mode_normal_event(const sapp_event *e)
 
 		case SAPP_KEYCODE_X:
 		case SAPP_KEYCODE_LEFT_SHIFT:
-			g_drawit.select_mode = SELECT_NEAREST; /* TODO: make this a MODE itself */
+			mode_switch_edit(SELECT_NEAREST);
 			break;
 
 		case SAPP_KEYCODE_M:
@@ -839,41 +831,103 @@ void mode_normal_event(const sapp_event *e)
 
 		pen->active_colors = &pen->colors_primary;
 		break;
-	case SAPP_EVENTTYPE_KEY_UP:
-		if (!g_drawit.select_mode) break;
-		g_drawit.select_mode = SELECT_NONE;
-
-		if (e->key_code == SAPP_KEYCODE_LEFT_SHIFT) {
-			mode_switch_normal();
-		}
-
-		if (e->key_code == SAPP_KEYCODE_X) {
-			for (i = 0; i < selection_da->count; i++) {
-				canvas_object_set_deleted(canvas, selection_da->elems[i], true);
-				cmd_hist_record(hist, cmd_object_delete(canvas, selection_da->elems[i]));
-			}
-			selection_da->count = 0;
-		}
-
-		break;
+	case SAPP_EVENTTYPE_KEY_UP: break;
 	default: break;
 	}
 }
 
 void mode_switch_normal(void)
 {
+	struct da_object_handle *selection = g_drawit.selection_da;
+
 	g_drawit.mode = MODE_NORMAL;
+	g_drawit.gfx.mouse.hide = false;
+	sapp_show_mouse(false);
+
+	selection->count = 0;
+}
+
+/* MODE: EDIT */
+void mode_edit_event_select_nearest(const sapp_event *e)
+{
+	struct da_object_handle *selection = g_drawit.selection_da;
+	struct mouse *mouse = &g_drawit.gfx.mouse;
+	struct canvas *canvas = &g_drawit.canvas;
+	struct object_handle hndl;
+
+	(void)e;
+
+	hndl.kind = OBJECT_KIND_TEXT;
+	hndl.id = text_store_hit(&canvas->text_store, mouse->world);
+
+	if (hndl.id == -1) {
+		hndl.kind = OBJECT_KIND_STROKE;
+		hndl.id = stroke_store_nearest(&canvas->stroke_store, mouse->world, NULL);
+	}
+
+	if (hndl.id == -1) {
+		selection->count = 0;
+		return;
+	}
+
+	if (!selection->count) {
+		g_drawit.selection_da = da_object_handle_append_empty(g_drawit.selection_da, 1);
+	} else {
+		selection->count = 1;
+	}
+	selection->elems[0] = hndl;
+}
+
+void mode_edit_event_select(const sapp_event *e)
+{
+	switch(g_drawit.select_type) {
+	case SELECT_NEAREST:
+		mode_edit_event_select_nearest(e);
+		break;
+	default: return;
+	}
+}
+
+void mode_edit_event(const sapp_event *e)
+{
+	struct da_object_handle *selection_da = g_drawit.selection_da;
+	struct canvas *canvas = &g_drawit.canvas;
+	struct cmd_hist *hist = &g_drawit.hist;
+	size_t i;
+
+	mode_edit_event_select(e);
+
+	switch (e->type) {
+	case SAPP_EVENTTYPE_KEY_UP:
+		switch (e->key_code) {
+		case SAPP_KEYCODE_S:
+			/* Enter drag Mode */
+			break;
+		case SAPP_KEYCODE_X:
+			for (i = 0; i < selection_da->count; i++) {
+				canvas_object_set_deleted(canvas, selection_da->elems[i], true);
+				cmd_hist_record(hist, cmd_object_delete(canvas, selection_da->elems[i]));
+			}
+			/* fall through */
+		default:
+			mode_switch_normal();
+			break;
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+void mode_switch_edit(enum select_type type)
+{
+	g_drawit.mode = MODE_EDIT;
+	g_drawit.select_type = type;
 	g_drawit.gfx.mouse.hide = false;
 	sapp_show_mouse(false);
 }
 
 /* MODE: DRAW */
-
-void mode_draw_stroke_begin(struct stroke_store *store, struct pen_pt pt, const color *colors)
-{
-	stroke_store_begin(store, colors);
-	stroke_store_append_point(store, pt);
-}
 
 void mode_draw_stroke_try_append(struct stroke_store *store, struct pen_pt pt)
 {
@@ -887,25 +941,17 @@ void mode_draw_stroke_try_append(struct stroke_store *store, struct pen_pt pt)
 	stroke_store_append_point(store, pt);
 }
 
-void mode_draw_stroke_end(struct stroke_store *store, struct cmd_hist *hist)
-{
-	cmd_hist_record(hist, cmd_stroke_create(store));
-}
-
 void mode_draw_event(const sapp_event *e)
 {
-	struct cmd_hist *hist = &g_drawit.hist;
-	struct canvas *canvas = &g_drawit.canvas;
+	struct stroke_store *store = &g_drawit.canvas.stroke_store;
 	struct pen *pen = &g_drawit.pen;
 
 	switch (e->type) {
-	/* Mouse */
 	case SAPP_EVENTTYPE_MOUSE_UP:
-		mode_draw_stroke_end(&canvas->stroke_store, hist);
 		mode_switch_normal();
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
-		mode_draw_stroke_try_append(&canvas->stroke_store, pen->curr_pt);
+		mode_draw_stroke_try_append(store, pen->curr_pt);
 		break;
 	default: break;
 	}
@@ -913,17 +959,24 @@ void mode_draw_event(const sapp_event *e)
 
 void mode_switch_draw(void)
 {
-	struct canvas *canvas = &g_drawit.canvas;
 	struct graphic_ctx *gfx = &g_drawit.gfx;
 	struct status_line *status = &g_drawit.status_line;
+
+	struct stroke_store *store = &g_drawit.canvas.stroke_store;
+	struct cmd_hist *hist = &g_drawit.hist;
 	struct pen *pen = &g_drawit.pen;
+	const color *colors = pen->active_colors[g_drawit.theme];
 
 	if (status->len) status->len = 0;
 
 	g_drawit.mode = MODE_DRAW;
 	gfx->mouse.hide = false;
-	mode_draw_stroke_begin(&canvas->stroke_store, pen->curr_pt, *pen->active_colors);
 	sapp_show_mouse(false);
+
+	stroke_store_begin(store, colors);
+	stroke_store_append_point(store, pen->curr_pt);
+	/* What's recorded is only the 'act' of creating a stroke */
+	cmd_hist_record(hist, cmd_stroke_create(store));
 }
 
 
@@ -1052,7 +1105,7 @@ void mode_switch_text(int edit_id)
 	const color *colors = *g_drawit.pen.active_colors;
 	struct graphic_ctx *gfx = &g_drawit.gfx;
 
-	if (edit_id > 0) {
+	if (edit_id >= 0) {
 		g_drawit.active_text_id = edit_id;
 	} else {
 		text_store_append(store, colors, gfx->font_handle, FONT_SIZE_DEFAULT, gfx->mouse.world);
@@ -1358,44 +1411,6 @@ void event_pen(const sapp_event *e)
 	}
 }
 
-void event_select_nearest(const sapp_event *e)
-{
-	struct da_object_handle *selection = g_drawit.selection_da;
-	struct mouse *mouse = &g_drawit.gfx.mouse;
-	struct canvas *canvas = &g_drawit.canvas;
-	struct object_handle hndl;
-
-	(void)e;
-
-	hndl.kind = OBJECT_KIND_TEXT;
-	hndl.id = text_store_hit(&canvas->text_store, mouse->world);
-
-	if (hndl.id == -1) {
-		hndl.kind = OBJECT_KIND_STROKE;
-		hndl.id = stroke_store_nearest(&canvas->stroke_store, mouse->world, NULL);
-	}
-
-	if (hndl.id == -1) {
-		selection->count = 0;
-		return;
-	}
-
-	if (!selection->count) {
-		g_drawit.selection_da = da_object_handle_append_empty(g_drawit.selection_da, 1);
-	} else {
-		selection->count = 1;
-	}
-	selection->elems[0] = hndl;
-}
-
-void event_select(const sapp_event *e)
-{
-	switch(g_drawit.select_mode) {
-	case SELECT_NEAREST: event_select_nearest(e); break;
-	default: return;
-	}
-}
-
 void event(const sapp_event *e)
 {
 	struct graphic_ctx *gfx = &g_drawit.gfx;
@@ -1415,11 +1430,13 @@ void event(const sapp_event *e)
 	}
 
 	event_pen(e);
-	event_select(e);
 
 	switch (g_drawit.mode) {
 	case MODE_NORMAL:
 		mode_normal_event(e);
+		break;
+	case MODE_EDIT:
+		mode_edit_event(e);
 		break;
 	case MODE_DRAW:
 		mode_draw_event(e);
