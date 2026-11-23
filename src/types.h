@@ -39,6 +39,12 @@ static inline vec2 vec2_all(float s)
 	return (vec2){s, s};
 }
 
+static inline vec2 vec2_add(vec2 a, vec2 b) { return (vec2){a.x + b.x, a.y + b.y}; }
+
+static inline vec2 vec2_sub(vec2 a, vec2 b) { return (vec2){a.x - b.x, a.y - b.y}; }
+
+static inline vec2 vec2_neg(vec2 a) { return (vec2){-a.x, -a.y}; }
+
 static inline float vec2_dist2(vec2 from, vec2 to)
 {
 	vec2 dist = { to.x - from.x, to.y - from.y };
@@ -80,6 +86,16 @@ static inline bool rect_contains(rect r, vec2 v)
 {
 	return r.x0 < v.x && v.x < r.x1
 	    && r.y0 < v.y && v.y < r.y1;
+}
+
+static inline rect rect_transl(rect r, vec2 d)
+{
+	return (rect){
+		.x0 = r.x0 + d.x,
+		.y0 = r.y0 + d.y,
+		.x1 = r.x1 + d.x,
+		.y1 = r.y1 + d.y
+	};
 }
 
 

@@ -46,7 +46,7 @@ enum object_kind {
 };
 
 struct object_data {
-	vec2             pos;
+	vec2             transl;
 	rect             bounds;
 	bool             deleted;
 };
@@ -110,6 +110,7 @@ struct canvas {
 enum cmd_kind {
 	CMD_NONE,
 	CMD_OBJECT_DELETE,
+	CMD_OBJECT_DRAG,
 	CMD_STROKE_CREATE,
 	CMD_TEXT_CREATE,
 };
@@ -121,6 +122,12 @@ struct cmd {
 			struct object_handle *hndls;
 			size_t count;
 		} delete;
+		struct {
+			struct object_handle *hndls;
+			size_t count;
+			/* flt driftnya tb, daripada track start-end for each obj */
+			vec2 delta;
+		} drag;
 	} v;
 };
 
@@ -213,6 +220,8 @@ struct drawit_ctx {
 
 	enum select_kind         select_kind;
 	struct da_object_handle *selection_da;
+
+	vec2                     drag_start, drag_end;
 
 	int                      active_text_id;
 
@@ -410,10 +419,13 @@ float stroke_store_dist(const struct stroke_store *store, int idx, vec2 v)
 	const struct pen_pt *s_inputs = store->input_da->elems + s->input_idx;
 	float nearest_dist2 = FLT_MAX;
 	float dist2;
+
+	vec2 global_coords;
 	size_t i;
 
 	for (i = 0; i < s->input_count; i++) {
-		dist2 = vec2_dist2(v, s_inputs[i].coord);
+		global_coords = vec2_add(s_inputs[i].coord, s->obj.transl);
+		dist2 = vec2_dist2(v, global_coords);
 		if (dist2 < nearest_dist2)
 			nearest_dist2 = dist2;
 	}
@@ -422,19 +434,28 @@ float stroke_store_dist(const struct stroke_store *store, int idx, vec2 v)
 
 int stroke_store_nearest(const struct stroke_store *store, vec2 v, float *dist2_out)
 {
+	struct stroke_desc *desc;
+	rect global_bounds;
+
 	size_t nearest_stroke_idx = -1;
 	float nearest_dist2 = FLT_MAX;
 	float dist2;
 	size_t i;
 
 	for (i = 0; i < store->desc_da->count; i++) {
+		desc = store->desc_da->elems + i;
+
 		if (store->desc_da->elems[i].obj.deleted)
 			continue;
-		if (!rect_contains(store->desc_da->elems[i].obj.bounds, v))
+
+		global_bounds = rect_transl(desc->obj.bounds, desc->obj.transl);
+		if (!rect_contains(global_bounds, v))
 			continue;
+
 		dist2 = stroke_store_dist(store, i, v);
 		if (dist2 >= nearest_dist2)
 			continue;
+
 		nearest_dist2 = dist2;
 		nearest_stroke_idx = i;
 	}
@@ -443,12 +464,12 @@ int stroke_store_nearest(const struct stroke_store *store, vec2 v, float *dist2_
 }
 
 /* CANVAS: TEXT */
-struct text_obj text_obj_create(const color *colors, int font_handle, float font_size, vec2 pos)
+struct text_obj text_obj_create(const color *colors, int font_handle, float font_size, vec2 transl)
 {
 	const float LEADING_RATIO = 1.2f;
 
 	return (struct text_obj) {
-		.obj.pos = pos,
+		.obj.transl = transl,
 		.obj.bounds = BOUNDS_INIT,
 
 		.font_handle = font_handle,
@@ -468,11 +489,11 @@ void text_store_print(const struct text_store *store)
 	for (i = 0; i < store->text_da->count; i++) {
 		t = store->text_da->elems + i;
 		printf("text[%zu]\n", i);
-		printf("   pos: (%f, %f)\n"
+		printf("transl: (%f, %f)\n"
 		       "  font: %d\n"
 		       "  size: %f\n"
 		       "gapbuf: s(%zu) e(%zu) c(%zu)\n",
-			t->obj.pos.x, t->obj.pos.y,
+			t->obj.transl.x, t->obj.transl.y,
 			t->font_handle,
 			t->font_size,
 			t->buf->gap_start, t->buf->gap_end, t->buf->capacity
@@ -483,7 +504,7 @@ void text_store_print(const struct text_store *store)
 }
 
 static void nvg_fontsize_ctx(NVGcontext *ctx, const struct text_obj *txt);
-void text_obj_update_bounds(struct text_obj *txt, struct graphic_ctx *gfx)
+static void text_obj_update_bounds(struct text_obj *txt, struct graphic_ctx *gfx)
 {
 	const struct gapbuf *buf = txt->buf;
 	size_t start = 0, i = 0;
@@ -515,10 +536,8 @@ void text_obj_update_bounds(struct text_obj *txt, struct graphic_ctx *gfx)
 	}
 
 	txt->obj.bounds = (rect) {
-		.x0 = txt->obj.pos.x,
-		.y0 = txt->obj.pos.y - h,
-		.x1 = txt->obj.pos.x + max_w,
-		.y1 = txt->obj.pos.y,
+		.x0 = 0,     .y0 = -h,
+		.x1 = max_w, .y1 = 0,
 	};
 	txt->bounds_dirty = 0;
 }
@@ -545,11 +564,16 @@ static inline void text_store_append(struct text_store *store, const color *colo
 
 int text_store_hit(const struct text_store *store, vec2 v)
 {
+	struct text_obj *txt;
+	rect global_bounds;
 	size_t i;
 
 	for (i = 0; i < store->text_da->count; i++) {
+		txt = store->text_da->elems + i;
 		if (store->text_da->elems[i].obj.deleted) continue;
-		if (!rect_contains(store->text_da->elems[i].obj.bounds, v))
+
+		global_bounds = rect_transl(txt->obj.bounds, txt->obj.transl);
+		if (!rect_contains(global_bounds, v))
 			continue;
 		return i;
 	}
@@ -584,16 +608,32 @@ void canvas_object_set_deleted(struct canvas *canvas, struct object_handle hndl,
 	obj->deleted = deleted;
 }
 
+void canvas_object_transl(struct canvas *canvas, struct object_handle hndl, vec2 d)
+{
+	struct object_data *obj = canvas_object_get(canvas, hndl);
+	obj->transl.x += d.x;
+	obj->transl.y += d.y;
+}
+
 /* ==============================
  * CMD
  * ==============================
  */
-void cmd_forget(struct cmd *cmd)
+void cmd_cleanup(struct cmd *cmd)
 {
 	switch (cmd->kind) {
+	case CMD_STROKE_CREATE: break; /* Strokes don't allocate standalone */
+	case CMD_TEXT_CREATE:
+		puts("Free text");
+		/* TODO: if deleted, free the gapbuf of the last text_idx that wasn't restored */
+		break;
 	case CMD_OBJECT_DELETE:
-		puts("Free handle");
+		puts("Free del handles");
 		free(cmd->v.delete.hndls);
+		break;
+	case CMD_OBJECT_DRAG:
+		puts("Free drag handles");
+		free(cmd->v.drag.hndls);
 		break;
 	default: break;
 	}
@@ -608,6 +648,11 @@ void cmd_undo(struct cmd c, struct canvas *canvas)
 	case CMD_OBJECT_DELETE:
 		for (i = 0; i < c.v.delete.count; i++) {
 			canvas_object_set_deleted(canvas, c.v.delete.hndls[i], false);
+		}
+		break;
+	case CMD_OBJECT_DRAG:
+		for (i = 0; i < c.v.drag.count; i++) {
+			canvas_object_transl(canvas, c.v.drag.hndls[i], vec2_neg(c.v.drag.delta));
 		}
 		break;
 	case CMD_STROKE_CREATE:
@@ -628,6 +673,11 @@ void cmd_redo(struct cmd c, struct canvas *canvas)
 	case CMD_OBJECT_DELETE:
 		for (i = 0; i < c.v.delete.count; i++) {
 			canvas_object_set_deleted(canvas, c.v.delete.hndls[i], true);
+		}
+		break;
+	case CMD_OBJECT_DRAG:
+		for (i = 0; i < c.v.drag.count; i++) {
+			canvas_object_transl(canvas, c.v.drag.hndls[i], c.v.drag.delta);
 		}
 		break;
 	case CMD_STROKE_CREATE:
@@ -657,12 +707,22 @@ struct cmd cmd_objects_delete(struct object_handle *hndls, size_t count)
 	return cmd;
 }
 
+struct cmd cmd_objects_drag(struct object_handle *hndls, size_t count, vec2 d)
+{
+	struct cmd cmd;
+	cmd.kind = CMD_OBJECT_DRAG;
+	cmd.v.drag.hndls = hndls;
+	cmd.v.drag.count = count;
+	cmd.v.drag.delta = d;
+	return cmd;
+}
+
 /* CANVAS_HIST */
 static void canvas_hist_record(struct canvas_hist *hist, struct cmd cmd)
 {
 	hist->cursor = RINGBUF_INCR(hist->cursor, ARRAY_SIZE(hist->cmds), 1);
 
-	cmd_forget(hist->cmds + hist->cursor);
+	cmd_cleanup(hist->cmds + hist->cursor);
 	hist->cmds[hist->cursor] = cmd;
 
 	hist->last = hist->cursor;
@@ -702,6 +762,7 @@ static void mode_switch_edit(enum select_kind kind);
 static void mode_switch_draw(void);
 static void mode_switch_command(void);
 static void mode_switch_text(int edit_id);
+static void mode_switch_drag(void);
 
 /* MODE: NORMAL */
 static void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
@@ -813,6 +874,7 @@ static void mode_normal_event(const sapp_event *e)
 			break;
 
 		case SAPP_KEYCODE_X:
+		case SAPP_KEYCODE_S:
 		case SAPP_KEYCODE_LEFT_SHIFT:
 			mode_switch_edit(SELECT_NEAREST);
 			break;
@@ -894,17 +956,21 @@ static void mode_edit_event(const sapp_event *e)
 
 	switch (e->type) {
 	case SAPP_EVENTTYPE_KEY_UP:
+
 		switch (e->key_code) {
 		case SAPP_KEYCODE_S:
-			/* Enter drag Mode */
+			if (!selection_da->count) break;
+			mode_switch_drag();
 			break;
 		case SAPP_KEYCODE_X:
+			if (!selection_da->count) break;
 			for (i = 0; i < selection_da->count; i++) {
 				canvas_object_set_deleted(canvas, selection_da->elems[i], true);
 			}
 			hndls = da_object_handle_elemdup(selection_da);
 			canvas_hist_record(hist, cmd_objects_delete(hndls, selection_da->count));
-			/* fall through */
+			mode_switch_normal();
+			break;
 		default:
 			mode_switch_normal();
 			break;
@@ -923,9 +989,64 @@ static void mode_switch_edit(enum select_kind kind)
 	sapp_show_mouse(false);
 }
 
+/* MODE: DRAG */
+static void mode_drag_event(const sapp_event *e)
+{
+	struct da_object_handle *selection_da = g_drawit.selection_da;
+	struct canvas *canvas = &g_drawit.canvas;
+	struct mouse *mouse = &g_drawit.gfx.mouse;
+	struct canvas_hist *hist = &g_drawit.hist;
+	struct object_handle *hndls;
+	size_t i;
+	vec2 d;
+
+	switch (e->type) {
+	case SAPP_EVENTTYPE_MOUSE_MOVE:
+		d = vec2_sub(mouse->world, g_drawit.drag_end);
+
+		for (i = 0; i < selection_da->count; i++) { 
+			canvas_object_transl(canvas, selection_da->elems[i], d);
+		}
+		g_drawit.drag_end = mouse->world;
+		break;
+
+	case SAPP_EVENTTYPE_KEY_DOWN:
+		switch (e->key_code) {
+		case SAPP_KEYCODE_S:
+			d = vec2_sub(g_drawit.drag_end, g_drawit.drag_start);
+			hndls = da_object_handle_elemdup(selection_da);
+			canvas_hist_record(hist, cmd_objects_drag(hndls, selection_da->count, d));
+			mode_switch_normal();
+			break;
+		case SAPP_KEYCODE_ESCAPE:
+			d = vec2_sub(g_drawit.drag_start, g_drawit.drag_end);
+			for (i = 0; i < selection_da->count; i++) { 
+				canvas_object_transl(canvas, selection_da->elems[i], d);
+			}
+			mode_switch_normal();
+		default: break;
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+static void mode_switch_drag(void)
+{
+	struct graphic_ctx *gfx = &g_drawit.gfx;
+
+	g_drawit.mode = MODE_DRAG;
+	gfx->mouse.hide = false;
+	sapp_show_mouse(false);
+
+	g_drawit.drag_start = gfx->mouse.world;
+	g_drawit.drag_end = gfx->mouse.world;
+}
+
 /* MODE: DRAW */
 
-void mode_draw_stroke_try_append(struct stroke_store *store, struct pen_pt pt)
+static void mode_draw_stroke_try_append(struct stroke_store *store, struct pen_pt pt)
 {
 	const int MIN_PX = 2;
 	static struct pen_pt last_valid_pt = PEN_PT_INIT;
@@ -1169,30 +1290,32 @@ void draw_text_cursor_overlay(struct graphic_ctx *gfx, const struct text_obj *tx
 {
 	vec2 offset = get_cursor_offset(gfx, txt);
 	vec2 size = get_cursor_size(gfx, txt);
-	vec2 pos = {
-		(local ? 0 : txt->obj.pos.x) + offset.x,
-		(local ? 0 : txt->obj.pos.y) + offset.y,
+	vec2 transl = {
+		(local ? 0 : txt->obj.transl.x) + offset.x,
+		(local ? 0 : txt->obj.transl.y) + offset.y,
 	};
 	const char *c = txt->buf->gap_end < txt->buf->capacity ? txt->buf->data + txt->buf->gap_end : " ";
 
 	nvgFillColor(gfx->vg, color_to_NVGcolor(COLORS_CONTRAST[theme]));
 	nvgBeginPath(gfx->vg);
-	nvgRect(gfx->vg, pos.x, pos.y - size.y/2, size.x, size.y); /* offset y to middle */
+	nvgRect(gfx->vg, transl.x, transl.y - size.y/2, size.x, size.y); /* offset y to middle */
 	nvgFill(gfx->vg);
 
 	nvg_fontsize_ctx(gfx->vg, txt);
 	nvgFillColor(gfx->vg, color_to_NVGcolor(COLORS_BACKGROUND[theme]));
-	nvgText(gfx->vg, pos.x, pos.y, c, c+1); /* I give up messing with GlobalCompositeOperations */
+	nvgText(gfx->vg, transl.x, transl.y, c, c+1); /* I give up messing with GlobalCompositeOperations */
 }
 
 void draw_obj_bounds(struct graphic_ctx *gfx, const struct object_data *obj)
 {
+	rect global_bounds = rect_transl(obj->bounds, obj->transl);
+
 	nvgBeginPath(gfx->vg);
 	nvgRect(gfx->vg,
-		obj->bounds.x0,
-		obj->bounds.y0,
-		obj->bounds.x1 - obj->bounds.x0,
-		obj->bounds.y1 - obj->bounds.y0
+		global_bounds.x0,
+		global_bounds.y0,
+		global_bounds.x1 - global_bounds.x0,
+		global_bounds.y1 - global_bounds.y0
 	);
 	nvgStrokeColor(gfx->vg, nvgRGBA(0, 255, 0, 255));
 	nvgStrokeWidth(gfx->vg, 2.0f);
@@ -1212,7 +1335,7 @@ void draw_text(struct graphic_ctx *gfx, const struct text_obj *txt, enum theme t
 
 	nvgSave(gfx->vg);
 	nvgScale(gfx->vg, 1, -1);
-	nvgTranslate(gfx->vg, txt->obj.pos.x, -txt->obj.pos.y);
+	nvgTranslate(gfx->vg, txt->obj.transl.x, -txt->obj.transl.y);
 		x = 0;
 		y = txt->line_height/2;
 
@@ -1295,21 +1418,24 @@ void draw_stroke_store(struct graphic_ctx *gfx, struct stroke_store *store)
 
 		s_vertices = store->pfh_vertex_buf.elems + s->vertex_idx;
 
-		nvgBeginPath(gfx->vg);
-		nvgFillColor(gfx->vg, color_to_NVGcolor(s->colors[g_drawit.theme]));
+		nvgSave(gfx->vg);
+		nvgTranslate(gfx->vg, s->obj.transl.x, s->obj.transl.y);
+			nvgBeginPath(gfx->vg);
+			nvgFillColor(gfx->vg, color_to_NVGcolor(s->colors[g_drawit.theme]));
 
-		p0 = s_vertices[s->vertex_count-1];
-		p1 = s_vertices[0];
-		nvgMoveTo(gfx->vg, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
+			p0 = s_vertices[s->vertex_count-1];
+			p1 = s_vertices[0];
+			nvgMoveTo(gfx->vg, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
 
-		for (j = 0; j < s->vertex_count; j++) {
-			p0 = s_vertices[j];
-			p1 = (j+1) == s->vertex_count
-				? s_vertices[0]
-				: s_vertices[j + 1];
-			nvgQuadTo(gfx->vg, p0.x, p0.y, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
-		}
-		nvgFill(gfx->vg);
+			for (j = 0; j < s->vertex_count; j++) {
+				p0 = s_vertices[j];
+				p1 = (j+1) == s->vertex_count
+					? s_vertices[0]
+					: s_vertices[j + 1];
+				nvgQuadTo(gfx->vg, p0.x, p0.y, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
+			}
+			nvgFill(gfx->vg);
+		nvgRestore(gfx->vg);
 	}
 }
 /*
@@ -1443,6 +1569,9 @@ void event(const sapp_event *e)
 		break;
 	case MODE_TEXT:
 		mode_text_event(e);
+		break;
+	case MODE_DRAG:
+		mode_drag_event(e);
 		break;
 	default: break;
 	}
