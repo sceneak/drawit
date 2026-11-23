@@ -118,8 +118,9 @@ struct cmd {
 	enum cmd_kind kind;
 	union ctx {
 		struct {
-			struct object_handle hndl;
-		} obj;
+			struct object_handle *hndls;
+			size_t count;
+		} delete;
 	} v;
 };
 
@@ -287,7 +288,6 @@ static inline void status_line_set(struct status_line *s, const char *str)
 	s->len = snprintf(s->buf, ARRAY_SIZE(s->buf), "%s", str);
 	s->len = min(s->len, ARRAY_SIZE(s->buf)-1);
 }
-
 
 /* ==============================
  * CANVAS
@@ -591,8 +591,10 @@ void canvas_object_set_deleted(struct canvas *canvas, struct object_handle hndl,
 void cmd_forget(struct cmd *cmd)
 {
 	switch (cmd->kind) {
-	case CMD_OBJECT_DELETE: break;
-	case CMD_STROKE_CREATE: break;
+	case CMD_OBJECT_DELETE:
+		puts("Free handle");
+		free(cmd->v.delete.hndls);
+		break;
 	default: break;
 	}
 	cmd->kind = CMD_NONE;
@@ -600,9 +602,13 @@ void cmd_forget(struct cmd *cmd)
 
 void cmd_undo(struct cmd c, struct canvas *canvas)
 {
+	size_t i;
+
 	switch (c.kind) {
 	case CMD_OBJECT_DELETE:
-		canvas_object_set_deleted(canvas, c.v.obj.hndl, false);
+		for (i = 0; i < c.v.delete.count; i++) {
+			canvas_object_set_deleted(canvas, c.v.delete.hndls[i], false);
+		}
 		break;
 	case CMD_STROKE_CREATE:
 		stroke_store_delete_last(&canvas->stroke_store);
@@ -616,9 +622,13 @@ void cmd_undo(struct cmd c, struct canvas *canvas)
 
 void cmd_redo(struct cmd c, struct canvas *canvas)
 {
+	size_t i;
+
 	switch (c.kind) {
 	case CMD_OBJECT_DELETE:
-		canvas_object_set_deleted(canvas, c.v.obj.hndl, true);
+		for (i = 0; i < c.v.delete.count; i++) {
+			canvas_object_set_deleted(canvas, c.v.delete.hndls[i], true);
+		}
 		break;
 	case CMD_STROKE_CREATE:
 		stroke_store_restore_last(&canvas->stroke_store);
@@ -630,26 +640,20 @@ void cmd_redo(struct cmd c, struct canvas *canvas)
 	}
 }
 
-/* CMD IMPL */
-struct cmd cmd_stroke_create()
+/* CMD MAKE */
+struct cmd cmd_make(enum cmd_kind kind)
 {
 	struct cmd cmd;
-	cmd.kind = CMD_STROKE_CREATE;
+	cmd.kind = kind;
 	return cmd;
 }
 
-struct cmd cmd_text_create()
-{
-	struct cmd cmd;
-	cmd.kind = CMD_TEXT_CREATE;
-	return cmd;
-}
-
-struct cmd cmd_object_delete(struct object_handle hndl)
+struct cmd cmd_objects_delete(struct object_handle *hndls, size_t count)
 {
 	struct cmd cmd;
 	cmd.kind = CMD_OBJECT_DELETE;
-	cmd.v.obj.hndl = hndl;
+	cmd.v.delete.hndls = hndls;
+	cmd.v.delete.count = count;
 	return cmd;
 }
 
@@ -700,7 +704,7 @@ static void mode_switch_command(void);
 static void mode_switch_text(int edit_id);
 
 /* MODE: NORMAL */
-void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
+static void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
 {
 	struct camera *cam = &gfx->cam;
 	struct mouse *mouse = &gfx->mouse;
@@ -734,7 +738,7 @@ void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
 	}
 }
 
-int mode_normal_event_transitions(const sapp_event *e)
+static int mode_normal_event_transitions(const sapp_event *e)
 {
 	switch (e->type) {
 	case SAPP_EVENTTYPE_CHAR: 
@@ -752,7 +756,7 @@ int mode_normal_event_transitions(const sapp_event *e)
 	return 0;
 }
 
-void mode_normal_event(const sapp_event *e)
+static void mode_normal_event(const sapp_event *e)
 {
 	struct canvas_hist *hist = &g_drawit.hist;
 	struct pen *pen = &g_drawit.pen;
@@ -826,7 +830,7 @@ void mode_normal_event(const sapp_event *e)
 	}
 }
 
-void mode_switch_normal(void)
+static void mode_switch_normal(void)
 {
 	struct da_object_handle *selection = g_drawit.selection_da;
 
@@ -838,9 +842,9 @@ void mode_switch_normal(void)
 }
 
 /* MODE: EDIT */
-void mode_edit_event_select_nearest(const sapp_event *e)
+static void mode_edit_event_select_nearest(const sapp_event *e)
 {
-	struct da_object_handle *selection = g_drawit.selection_da;
+	struct da_object_handle **selection = &g_drawit.selection_da;
 	struct mouse *mouse = &g_drawit.gfx.mouse;
 	struct canvas *canvas = &g_drawit.canvas;
 	struct object_handle hndl;
@@ -856,19 +860,19 @@ void mode_edit_event_select_nearest(const sapp_event *e)
 	}
 
 	if (hndl.id == -1) {
-		selection->count = 0;
+		(*selection)->count = 0;
 		return;
 	}
 
-	if (!selection->count) {
-		g_drawit.selection_da = da_object_handle_append_empty(g_drawit.selection_da, 1);
+	if (!(*selection)->count) {
+		*selection = da_object_handle_append_empty(*selection, 1);
 	} else {
-		selection->count = 1;
+		(*selection)->count = 1;
 	}
-	selection->elems[0] = hndl;
+	(*selection)->elems[0] = hndl;
 }
 
-void mode_edit_event_select(const sapp_event *e)
+static void mode_edit_event_select(const sapp_event *e)
 {
 	switch(g_drawit.select_kind) {
 	case SELECT_NEAREST:
@@ -878,11 +882,12 @@ void mode_edit_event_select(const sapp_event *e)
 	}
 }
 
-void mode_edit_event(const sapp_event *e)
+static void mode_edit_event(const sapp_event *e)
 {
 	struct da_object_handle *selection_da = g_drawit.selection_da;
 	struct canvas *canvas = &g_drawit.canvas;
 	struct canvas_hist *hist = &g_drawit.hist;
+	struct object_handle *hndls;
 	size_t i;
 
 	mode_edit_event_select(e);
@@ -896,8 +901,9 @@ void mode_edit_event(const sapp_event *e)
 		case SAPP_KEYCODE_X:
 			for (i = 0; i < selection_da->count; i++) {
 				canvas_object_set_deleted(canvas, selection_da->elems[i], true);
-				canvas_hist_record(hist, cmd_object_delete(selection_da->elems[i]));
 			}
+			hndls = da_object_handle_elemdup(selection_da);
+			canvas_hist_record(hist, cmd_objects_delete(hndls, selection_da->count));
 			/* fall through */
 		default:
 			mode_switch_normal();
@@ -909,7 +915,7 @@ void mode_edit_event(const sapp_event *e)
 	}
 }
 
-void mode_switch_edit(enum select_kind kind)
+static void mode_switch_edit(enum select_kind kind)
 {
 	g_drawit.mode = MODE_EDIT;
 	g_drawit.select_kind = kind;
@@ -931,7 +937,7 @@ void mode_draw_stroke_try_append(struct stroke_store *store, struct pen_pt pt)
 	stroke_store_append_point(store, pt);
 }
 
-void mode_draw_event(const sapp_event *e)
+static void mode_draw_event(const sapp_event *e)
 {
 	struct stroke_store *store = &g_drawit.canvas.stroke_store;
 	struct pen *pen = &g_drawit.pen;
@@ -947,7 +953,7 @@ void mode_draw_event(const sapp_event *e)
 	}
 }
 
-void mode_switch_draw(void)
+static void mode_switch_draw(void)
 {
 	struct graphic_ctx *gfx = &g_drawit.gfx;
 	struct status_line *status = &g_drawit.status_line;
@@ -966,13 +972,13 @@ void mode_switch_draw(void)
 	stroke_store_begin(store, colors);
 	stroke_store_append_point(store, pen->curr_pt);
 	/* What's recorded is only the 'act' of creating a stroke */
-	canvas_hist_record(hist, cmd_stroke_create());
+	canvas_hist_record(hist, cmd_make(CMD_STROKE_CREATE));
 }
 
 
 /* MODE: COMMAND */
 
-void command_exec(const char *str)
+static void command_exec(const char *str)
 {
 	struct canvas *canvas = &g_drawit.canvas;
 	struct status_line *status = &g_drawit.status_line;
@@ -998,7 +1004,7 @@ void command_exec(const char *str)
 	}
 }
 
-void mode_command_event(const sapp_event *e)
+static void mode_command_event(const sapp_event *e)
 {
 	struct status_line *status = &g_drawit.status_line;
 
@@ -1030,7 +1036,7 @@ void mode_command_event(const sapp_event *e)
 	}
 }
 
-void mode_switch_command(void)
+static void mode_switch_command(void)
 {
 	struct graphic_ctx *gfx = &g_drawit.gfx;
 	struct status_line *status = &g_drawit.status_line;
@@ -1044,7 +1050,7 @@ void mode_switch_command(void)
 
 /* MODE: TEXT */
 
-void mode_text_event(const sapp_event *e)
+static void mode_text_event(const sapp_event *e)
 {
 	struct graphic_ctx *gfx = &g_drawit.gfx;
 	struct text_store *store = &g_drawit.canvas.text_store;
@@ -1088,7 +1094,7 @@ void mode_text_event(const sapp_event *e)
 	}
 }
 
-void mode_switch_text(int edit_id)
+static void mode_switch_text(int edit_id)
 {
 	struct text_store *store = &g_drawit.canvas.text_store;
 	struct canvas_hist *hist = &g_drawit.hist;
@@ -1099,7 +1105,7 @@ void mode_switch_text(int edit_id)
 		g_drawit.active_text_id = edit_id;
 	} else {
 		text_store_append(store, colors, gfx->font_handle, FONT_SIZE_DEFAULT, gfx->mouse.world);
-		canvas_hist_record(hist, cmd_text_create());
+		canvas_hist_record(hist, cmd_make(CMD_TEXT_CREATE));
 
 		g_drawit.active_text_id = store->text_da->count-1;
 	}

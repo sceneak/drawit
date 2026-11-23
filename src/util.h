@@ -3,6 +3,7 @@
 
 #include <ctype.h>
 #include <string.h>
+#include <assert.h>
 
 #if defined(__GNUC__) || defined(__clang__)
 	#define NO_DISCARD __attribute__((warn_unused_result))

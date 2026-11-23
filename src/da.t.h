@@ -109,5 +109,19 @@ NO_DISCARD static inline struct NAME *NAME_DESTROY(struct NAME *da)
 	return NULL;
 }
 
+#define NAME_ELEMDUP CAT(NAME,_elemdup)
+static inline T *NAME_ELEMDUP(const struct NAME *da)
+{
+	T *res;
+
+	if (!da->count) return NULL;
+
+	res = malloc(da->count * sizeof(T));
+	if (!res) return NULL;
+
+	memcpy(res, da->elems, da->count * sizeof(T));
+	return res;
+}
+
 #undef T
 #undef NAME
