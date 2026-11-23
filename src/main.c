@@ -107,7 +107,7 @@ struct canvas {
 	struct text_store text_store;
 };
 
-enum cmd_type {
+enum cmd_kind {
 	CMD_NONE,
 	CMD_OBJECT_DELETE,
 	CMD_STROKE_CREATE,
@@ -115,7 +115,7 @@ enum cmd_type {
 };
 
 struct cmd {
-	enum cmd_type type;
+	enum cmd_kind kind;
 	union ctx {
 		struct {
 			struct object_handle hndl;
@@ -194,7 +194,7 @@ struct status_line {
 	size_t len;
 };
 
-enum select_type {
+enum select_kind {
 	SELECT_NONE,
 	SELECT_NEAREST,
 	/* SELECT_BOX, */
@@ -210,7 +210,7 @@ struct drawit_ctx {
 
 	struct pen               pen;
 
-	enum select_type         select_type;
+	enum select_kind         select_kind;
 	struct da_object_handle *selection_da;
 
 	int                      active_text_id;
@@ -590,17 +590,17 @@ void canvas_object_set_deleted(struct canvas *canvas, struct object_handle hndl,
  */
 void cmd_forget(struct cmd *cmd)
 {
-	switch (cmd->type) {
+	switch (cmd->kind) {
 	case CMD_OBJECT_DELETE: break;
 	case CMD_STROKE_CREATE: break;
 	default: break;
 	}
-	cmd->type = CMD_NONE;
+	cmd->kind = CMD_NONE;
 }
 
 void cmd_undo(struct cmd c, struct canvas *canvas)
 {
-	switch (c.type) {
+	switch (c.kind) {
 	case CMD_OBJECT_DELETE:
 		canvas_object_set_deleted(canvas, c.v.obj.hndl, false);
 		break;
@@ -616,7 +616,7 @@ void cmd_undo(struct cmd c, struct canvas *canvas)
 
 void cmd_redo(struct cmd c, struct canvas *canvas)
 {
-	switch (c.type) {
+	switch (c.kind) {
 	case CMD_OBJECT_DELETE:
 		canvas_object_set_deleted(canvas, c.v.obj.hndl, true);
 		break;
@@ -634,21 +634,21 @@ void cmd_redo(struct cmd c, struct canvas *canvas)
 struct cmd cmd_stroke_create()
 {
 	struct cmd cmd;
-	cmd.type = CMD_STROKE_CREATE;
+	cmd.kind = CMD_STROKE_CREATE;
 	return cmd;
 }
 
 struct cmd cmd_text_create()
 {
 	struct cmd cmd;
-	cmd.type = CMD_TEXT_CREATE;
+	cmd.kind = CMD_TEXT_CREATE;
 	return cmd;
 }
 
 struct cmd cmd_object_delete(struct object_handle hndl)
 {
 	struct cmd cmd;
-	cmd.type = CMD_OBJECT_DELETE;
+	cmd.kind = CMD_OBJECT_DELETE;
 	cmd.v.obj.hndl = hndl;
 	return cmd;
 }
@@ -694,7 +694,7 @@ static int canvas_hist_redo(struct canvas_hist *hist)
  * ==============================
  */
 static void mode_switch_normal(void);
-static void mode_switch_edit(enum select_type type);
+static void mode_switch_edit(enum select_kind kind);
 static void mode_switch_draw(void);
 static void mode_switch_command(void);
 static void mode_switch_text(int edit_id);
@@ -870,7 +870,7 @@ void mode_edit_event_select_nearest(const sapp_event *e)
 
 void mode_edit_event_select(const sapp_event *e)
 {
-	switch(g_drawit.select_type) {
+	switch(g_drawit.select_kind) {
 	case SELECT_NEAREST:
 		mode_edit_event_select_nearest(e);
 		break;
@@ -909,10 +909,10 @@ void mode_edit_event(const sapp_event *e)
 	}
 }
 
-void mode_switch_edit(enum select_type type)
+void mode_switch_edit(enum select_kind kind)
 {
 	g_drawit.mode = MODE_EDIT;
-	g_drawit.select_type = type;
+	g_drawit.select_kind = kind;
 	g_drawit.gfx.mouse.hide = false;
 	sapp_show_mouse(false);
 }
