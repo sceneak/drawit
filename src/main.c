@@ -805,7 +805,7 @@ static int mode_normal_event_transitions(const sapp_event *e)
 	case SAPP_EVENTTYPE_CHAR: 
 		if (e->char_code == ':') {
 			mode_switch_command();
-			break;
+			return 1;
 		}
 		if (e->char_code == 'i') {
 			mode_switch_text(-1);
@@ -875,7 +875,6 @@ static void mode_normal_event(const sapp_event *e)
 
 		case SAPP_KEYCODE_X:
 		case SAPP_KEYCODE_S:
-		case SAPP_KEYCODE_LEFT_SHIFT:
 			mode_switch_edit(SELECT_NEAREST);
 			break;
 
