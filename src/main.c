@@ -278,7 +278,7 @@ static inline vec2 screen_to_world(const struct graphic_ctx *gfx, vec2 screen)
 {
 	return (vec2) {
 		.x = ( (screen.x - gfx->screen_width/2) / gfx->cam.zoom) + gfx->cam.pos.x,
-		.y = ( (gfx->screen_height/2 - screen.y) / gfx->cam.zoom) + gfx->cam.pos.y,
+		.y = ( (screen.y - gfx->screen_height/2) / gfx->cam.zoom) + gfx->cam.pos.y,
 	};
 }
 
@@ -535,8 +535,8 @@ static void text_obj_update_bounds(struct text_obj *txt, struct graphic_ctx *gfx
 	}
 
 	txt->obj.bounds = (rect) {
-		.x0 = 0,     .y0 = -h,
-		.x1 = max_w, .y1 = 0,
+		.x0 = 0,     .y0 = 0,
+		.x1 = max_w, .y1 = h,
 	};
 	txt->bounds_dirty = 0;
 }
@@ -774,7 +774,7 @@ static void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		if (cam->is_panning) {
 			cam->pos.x = cam->pan_pivot_self.x + (cam->pan_pivot_mouse.x - mouse->screen.x)/cam->zoom;
-			cam->pos.y = cam->pan_pivot_self.y + (mouse->screen.y - cam->pan_pivot_mouse.y)/cam->zoom;
+			cam->pos.y = cam->pan_pivot_self.y + (cam->pan_pivot_mouse.y - mouse->screen.y)/cam->zoom;
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_UP:
@@ -1332,8 +1332,7 @@ void draw_text(struct graphic_ctx *gfx, const struct text_obj *txt, enum theme t
 	nvgFillColor(gfx->vg, color_to_NVGcolor(txt->colors[theme]));
 
 	nvgSave(gfx->vg);
-	nvgScale(gfx->vg, 1, -1);
-	nvgTranslate(gfx->vg, txt->obj.transl.x, -txt->obj.transl.y);
+	nvgTranslate(gfx->vg, txt->obj.transl.x, txt->obj.transl.y);
 		x = 0;
 		y = txt->line_height/2;
 
@@ -1593,7 +1592,7 @@ void frame(void)
 	nvgBeginFrame(gfx->vg, gfx->screen_width/gfx->screen_dpi_scale, gfx->screen_height/gfx->screen_dpi_scale, gfx->screen_dpi_scale);
 		nvgSave(gfx->vg);
 			nvgTranslate(gfx->vg, gfx->screen_width/2, gfx->screen_height/2);
-			nvgScale(gfx->vg, cam->zoom, -cam->zoom);
+			nvgScale(gfx->vg, cam->zoom, cam->zoom);
 			nvgTranslate(gfx->vg, -cam->pos.x, -cam->pos.y);
 
 			draw_stroke_store(gfx, &canvas->stroke_store);
