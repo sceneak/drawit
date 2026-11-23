@@ -304,13 +304,12 @@ static inline void status_line_set(struct status_line *s, const char *str)
  */
 struct canvas canvas_create_empty()
 {
-	struct stroke_store stroke_store = {
-		.desc_da = da_stroke_desc_create(DA_INITIAL_CAPACITY),
-		.input_da = da_pen_pt_create(DA_INITIAL_CAPACITY),
-	};
-	struct text_store text_store = {
-		.text_da = da_text_obj_create(DA_INITIAL_CAPACITY),
-	};
+	struct stroke_store stroke_store = { 0 };
+	struct text_store text_store = { 0 };
+
+	da_stroke_desc_create(&stroke_store.desc_da, DA_INITIAL_CAPACITY);
+	da_pen_pt_create(&stroke_store.input_da, DA_INITIAL_CAPACITY);
+	da_text_obj_create(&text_store.text_da, DA_INITIAL_CAPACITY);
 
 	pfh_vec2_buf_init(&stroke_store.pfh_vertex_buf, DA_INITIAL_CAPACITY);
 
@@ -337,7 +336,7 @@ void stroke_store_print(const struct stroke_store *store)
 
 void stroke_store_begin(struct stroke_store *store, const color *colors)
 {
-	store->desc_da = da_stroke_desc_append(store->desc_da, (struct stroke_desc) { 
+	da_stroke_desc_append(&store->desc_da, (struct stroke_desc) { 
 		.obj.bounds   = BOUNDS_INIT,
 
 		.input_idx    = store->input_da->count, 
@@ -369,7 +368,7 @@ void stroke_store_append_point(struct stroke_store *store, struct pen_pt pt)
 	struct stroke_desc *s = DA_LAST(store->desc_da);
 	const vec2 PT_EXTENTS = vec2_all(STROKE_OPTS.size/2 + STROKE_BOUNDS_MARGIN);
 
-	store->input_da = da_pen_pt_append(store->input_da, pt);
+	da_pen_pt_append(&store->input_da, pt);
 	s->input_count++;
 	s->obj.bounds = rect_fit_rect(s->obj.bounds, rect_create(pt.coord, PT_EXTENTS));
 
@@ -383,7 +382,7 @@ void stroke_store_append_points(struct stroke_store *store, const struct pen_pt 
 	struct stroke_desc *s = DA_LAST(store->desc_da);
 	int i;
 
-	store->input_da = da_pen_pt_append_n(store->input_da, pts, count);
+	da_pen_pt_append_n(&store->input_da, pts, count);
 	s->input_count += count;
 	for (i = 0; i < count; i++)
 		s->obj.bounds = rect_fit_rect(s->obj.bounds, rect_create(pts[i].coord, PT_EXTENTS));
@@ -558,7 +557,7 @@ void text_obj_cursor(struct text_obj *txt, int dir) { gapbuf_open(txt->buf, txt-
 
 static inline void text_store_append(struct text_store *store, const color *colors, int font_handle, float font_size, vec2 pos)
 {
-	store->text_da = da_text_obj_append(store->text_da, text_obj_create(colors, font_handle, font_size, pos));
+	da_text_obj_append(&store->text_da, text_obj_create(colors, font_handle, font_size, pos));
 	store->text_max_count = store->text_da->count;
 }
 
@@ -926,7 +925,7 @@ static void mode_edit_event_select_nearest(const sapp_event *e)
 	}
 
 	if (!(*selection)->count) {
-		*selection = da_object_handle_append_empty(*selection, 1);
+		da_object_handle_append_empty(selection, 1);
 	} else {
 		(*selection)->count = 1;
 	}
@@ -1475,7 +1474,7 @@ void init(void)
 
 	g_drawit.canvas = canvas_create_empty();
 	g_drawit.hist.canvas = &g_drawit.canvas;
-	g_drawit.selection_da = da_object_handle_create(DA_INITIAL_CAPACITY);
+	da_object_handle_create(&g_drawit.selection_da, DA_INITIAL_CAPACITY);
 
 	gfx->clear_colors = COLORS_BACKGROUND;
 	pen->colors_primary = COLORS_YELLOW;
