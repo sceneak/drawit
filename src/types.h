@@ -107,6 +107,12 @@ static inline struct gapbuf *gapbuf_create(size_t capacity)
 	return buf;
 }
 
+static inline void gapbuf_destroy(struct gapbuf **buf)
+{
+	free(*buf);
+	*buf = NULL;
+}
+
 static inline size_t gapbuf_suffix_len(const struct gapbuf *buf)
 {
 	return buf->capacity - buf->gap_end;
@@ -176,7 +182,7 @@ static inline void gapbuf_insert(struct gapbuf **buf_ptr, char c)
 	*buf_ptr = buf;
 }
 
-static inline void gapbuf_delete(struct gapbuf *buf)
+static inline void gapbuf_backspace(struct gapbuf *buf)
 {
 	if (buf->gap_start > 0)
 		buf->gap_start--;

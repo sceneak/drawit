@@ -1,5 +1,18 @@
 # Todo
-[] Status
 [] Groups
+Requirements:
+- Must be flat (no hierarchical renders, transl & state is global)
+- This means Obj -> Children access is needed to propagate changes down
+- Upwards traversal is also needed when 
+
+[] Enter edit mode with a filter for selection
+[] Status Line Messages for delete, drag, undo/redo
 [] Edit text
+	[] Text cleanup
+[] Canvas.h Separation
+[] Canvas Serialization
+[] Copy Paste Segments
+[] Animate
+[] Paste image
+[] Status
 [] Prefer struct ptr elem over vl members so NO_DISCARD isn't necessary
