@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Drawit
+Comment=A very minimal and lightweight vector-based whiteboarding program for illustrating concepts live.
+Exec=drawit
+Icon=drawit
+Terminal=false
+Categories=Graphics;2DGraphics;
