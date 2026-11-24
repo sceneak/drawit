@@ -1224,7 +1224,7 @@ static void mode_edit_event(const sapp_event *e)
 		case SAPP_KEYCODE_S:
 			if (!selection_da->count) break;
 			mode_switch_drag();
-			break;
+			return; /* prevents from switching to normal */
 		case SAPP_KEYCODE_X:
 			if (!selection_da->count) break;
 			for (i = 0; i < selection_da->count; i++) {
@@ -1244,10 +1244,9 @@ static void mode_edit_event(const sapp_event *e)
 			group_store_set_deleted(&canvas->group_store, selection_da->elems[0].id, true);
 			canvas_hist_record(hist, cmd_obj_make(CMD_GROUP_DELETE, selection_da->elems[0]));
 			break;
-		default:
-			mode_switch_normal();
-			break;
+		default: break;
 		}
+		mode_switch_normal();
 		break;
 	default:
 		break;
