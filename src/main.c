@@ -14,6 +14,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdarg.h>
 
 #include "types.h"
 
@@ -224,6 +225,7 @@ struct pen {
 };
 
 struct status_line {
+	int verbosity;
 	char buf[STATUS_LINE_MAX];
 	size_t len;
 };
@@ -246,6 +248,7 @@ struct drawit_ctx {
 
 	enum select_kind         select_kind;
 	struct da_object_handle *selection_da;
+	bool                     hide_selection_outline;
 
 	bool                     is_grouping;
 	struct canvas_checkpoint group_checkpoint;
@@ -297,6 +300,9 @@ static const pfh_stroke_opts STROKE_OPTS = {
 };
 
 static struct drawit_ctx g_drawit = {
+	.status_line = {
+		.verbosity = 1
+	},
 	.gfx = {
 		.cam = { .zoom = 1.0f, .zoom_frac = 0.1f }
 	}
@@ -321,9 +327,16 @@ static inline NVGcolor color_to_NVGcolor(color c)
 	return nvgRGBA(c.r, c.g, c.b, c.a);
 }
 
-static inline void status_line_set(struct status_line *s, const char *str)
+static inline void status_line_set(struct status_line *s, int level, const char *fmt, ...)
 {
-	s->len = snprintf(s->buf, ARRAY_SIZE(s->buf), "%s", str);
+	va_list args;
+
+	if (level > s->verbosity) return;
+
+	va_start(args, fmt);
+	s->len = vsnprintf(s->buf, ARRAY_SIZE(s->buf), fmt, args);
+	va_end(args);
+
 	s->len = min(s->len, ARRAY_SIZE(s->buf)-1);
 }
 
@@ -1094,14 +1107,14 @@ static void mode_normal_event(const sapp_event *e)
 		case SAPP_KEYCODE_Z:
 			if (e->modifiers & SAPP_MODIFIER_CTRL) {
 				if (canvas_hist_undo(hist) == -1) {
-					status_line_set(status, "Already at oldest history");
+					status_line_set(status, 0, "Already at oldest history");
 				}
 			}
 			break;
 		case SAPP_KEYCODE_R:
 			if (e->modifiers & SAPP_MODIFIER_CTRL) {
 				if (canvas_hist_redo(hist) == -1) {
-					status_line_set(status, "Already at newest change");
+					status_line_set(status, 0, "Already at newest change");
 				}
 			}
 			break;
@@ -1121,7 +1134,7 @@ static void mode_normal_event(const sapp_event *e)
 				g_drawit.is_grouping = false;
 
 				if (canvas_objects_created_after(canvas, *checkpt, &hndls, &count) != 0) {
-					status_line_set(status, "Invalid Grouping Checkpoint");
+					status_line_set(status, 1, "Invalid Grouping Checkpoint");
 					break;
 				}
 				if (canvas_object_group_owned(canvas, hndls, count) != 0) {
@@ -1129,12 +1142,12 @@ static void mode_normal_event(const sapp_event *e)
 					break;
 				}
 				canvas_hist_record(hist, cmd_make(CMD_OBJECT_GROUP));
-				status_line_set(status, "Commit Group");
+				status_line_set(status, 1, "Commit Group");
 			} else {
 				g_drawit.is_grouping = true;
 
 				*checkpt = canvas_checkpoint_make(canvas);
-				status_line_set(status, "Begin Group");
+				status_line_set(status, 1, "Begin Group");
 			}
 			break;
 		case SAPP_KEYCODE_M:
@@ -1297,7 +1310,7 @@ static void mode_switch_drag(void)
 	struct graphic_ctx *gfx = &g_drawit.gfx;
 
 	g_drawit.mode = MODE_DRAG;
-	gfx->mouse.hide = false;
+	gfx->mouse.hide = true;
 	sapp_show_mouse(false);
 
 	g_drawit.drag_start = gfx->mouse.world;
@@ -1361,26 +1374,29 @@ static void mode_switch_draw(void)
 
 static void command_exec(const char *str)
 {
-	struct canvas *canvas = &g_drawit.canvas;
 	struct status_line *status = &g_drawit.status_line;
+	int tmp;
 
 	if (str[0] == ':') {
 		str++;
-		if (drawit_strcasecmp(str, "light") == 0 || (str[0] == 'l')) {
+		if (str[0] == 'l') {
 			g_drawit.theme = THEME_LIGHT;
-			status_line_set(status, "theme=light");
-		} else if (drawit_strcasecmp(str, "dark") == 0 || (str[0] == 'd')) {
+			status_line_set(status, 0, "theme=light");
+		} else if (drawit_strcasecmp(str, "dark") == 0) {
 			g_drawit.theme = THEME_DARK;
-			status_line_set(status, "theme=dark");
-		} else if (drawit_strcasecmp(str, "quit") == 0 || (str[0] == 'q')) {
+			status_line_set(status, 0, "theme=dark");
+		} else if (drawit_strcasecmp(str, "quit") == 0) {
 			sapp_request_quit();
-		} else if (drawit_strcasecmp(str, "print") == 0 || (str[0] == 'p')) {
-			stroke_store_print(&canvas->stroke_store);
-			status_line_set(status, "debug print stroke store to stdout");
-		} else if (str[0] == 'v') {
-			status_line_set(status, "Compiled on " __DATE__ " " __TIME__);
+		} else if (drawit_strcasecmp(str, "meta") == 0) {
+			status_line_set(status, 0, "Compiled on " __DATE__ " " __TIME__);
+		} else if (drawit_strcasecmp(str, "selout") == 0) {
+			g_drawit.hide_selection_outline = !g_drawit.hide_selection_outline;
+			status_line_set(status, 0, "toggle selection outline");
+		} else if (sscanf(str, "verbosity %d", &tmp) == 1) {
+			g_drawit.status_line.verbosity = tmp;
+			status_line_set(status, 0, "verbosity=%d", tmp);
 		} else {
-			status_line_set(status, "unknown command");
+			status_line_set(status, 0, "unknown command");
 		}
 	}
 }
@@ -1424,7 +1440,7 @@ static void mode_switch_command(void)
 
 	g_drawit.mode = MODE_COMMAND;
 	gfx->mouse.hide = true;
-	status_line_set(status, ":");
+	status_line_set(status, 0, ":");
 	sapp_show_mouse(true);
 }
 
@@ -1859,7 +1875,8 @@ void frame(void)
 
 			draw_stroke_store(gfx, &canvas->stroke_store);
 			draw_text_store(gfx, &canvas->text_store, g_drawit.theme, g_drawit.active_text_id);
-			draw_selected_bounds(gfx, canvas, g_drawit.selection_da);
+			if (!g_drawit.hide_selection_outline)
+				draw_selected_bounds(gfx, canvas, g_drawit.selection_da);
 
 		nvgRestore(gfx->vg);
 
