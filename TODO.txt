@@ -12,12 +12,7 @@
 
 # Todo
 [] Box Select
-	[] Impl group_id to object_data
-		[v] add obj init to text, stroke, groups
-		[v] update group creations
-		[v] update delete & restores
-		[v] test if it works
-	[] optional: hit test upwards
+	[v] Impl group_id to object_data
 	[] Impl hit_region for text, stroke, groups
 		[] add bools for root only scan
 	[] Use hit_region for SELECT mode

@@ -309,6 +309,8 @@ static const struct object_data OBJ_DEFAULT = {
 	}
 };
 
+static const struct object_handle HANDLE_DEFAULT = { .id = -1, .kind = OBJECT_KIND_NONE };
+
 static struct drawit_ctx g_drawit = {
 	.status_line = {
 		.verbosity = 1
@@ -534,12 +536,12 @@ float stroke_store_dist(const struct stroke_store *store, int id, vec2 v)
 	return nearest_dist2;
 }
 
-int stroke_store_hit_nearest(const struct stroke_store *store, vec2 v, float *dist2_out)
+struct object_handle stroke_store_hit_nearest(const struct stroke_store *store, vec2 v, float *dist2_out)
 {
 	struct stroke_desc *desc;
 	rect global_bounds;
 
-	size_t nearest_stroke_idx = -1;
+	long nearest_stroke_idx = -1;
 	float nearest_dist2 = FLT_MAX;
 	float dist2;
 	size_t i;
@@ -562,7 +564,9 @@ int stroke_store_hit_nearest(const struct stroke_store *store, vec2 v, float *di
 		nearest_stroke_idx = i;
 	}
 	if (dist2_out) *dist2_out = nearest_dist2;
-	return nearest_stroke_idx;
+
+	if (nearest_stroke_idx == -1) return HANDLE_DEFAULT;
+	return (struct object_handle) { .id = nearest_stroke_idx, .kind = OBJECT_KIND_STROKE };
 }
 
 /* CANVAS: TEXT */
@@ -674,7 +678,7 @@ static inline void text_store_append(struct text_store *store,
 	store->text_max_count = store->text_da->count;
 }
 
-int text_store_hit(const struct text_store *store, vec2 v)
+struct object_handle text_store_hit(const struct text_store *store, vec2 v)
 {
 	struct text_obj *txt;
 	rect global_bounds;
@@ -687,9 +691,9 @@ int text_store_hit(const struct text_store *store, vec2 v)
 		global_bounds = rect_transl(txt->obj.bounds, txt->obj.transl);
 		if (!rect_contains(global_bounds, v))
 			continue;
-		return i;
+		return (struct object_handle) { .id = i, .kind = OBJECT_KIND_TEXT };
 	}
-	return -1;
+	return HANDLE_DEFAULT;
 }
 
 void text_store_delete_last(const struct text_store *store)
@@ -727,7 +731,7 @@ void group_store_append_owned(struct group_store *store, struct object_handle *h
 	store->group_max_count = store->group_da->count;
 }
 
-int group_store_hit(const struct group_store *store, vec2 v)
+struct object_handle group_store_hit(const struct group_store *store, vec2 v)
 {
 	struct group *grp;
 	rect global_bounds;
@@ -740,9 +744,9 @@ int group_store_hit(const struct group_store *store, vec2 v)
 		global_bounds = rect_transl(grp->obj.bounds, grp->obj.transl);
 		if (!rect_contains(global_bounds, v))
 			continue;
-		return i;
+		return (struct object_handle) { .id = i, .kind = OBJECT_KIND_GROUP };
 	}
-	return -1;
+	return HANDLE_DEFAULT;
 }
 
 /* CANVAS: GENERAL OBJ FUNC */
@@ -796,21 +800,12 @@ struct object_handle canvas_object_hit(struct canvas *canvas, vec2 v)
 {
 	struct object_handle hndl;
 
-	hndl.kind = OBJECT_KIND_GROUP;
-	hndl.id = group_store_hit(&canvas->group_store, v);
-
-	if (hndl.id == -1) {
-		hndl.kind = OBJECT_KIND_TEXT;
-		hndl.id = text_store_hit(&canvas->text_store, v);
+	hndl = group_store_hit(&canvas->group_store, v);
+	if (hndl.kind == OBJECT_KIND_NONE) {
+		hndl = text_store_hit(&canvas->text_store, v);
 	}
-
-	if (hndl.id == -1) {
-		hndl.kind = OBJECT_KIND_STROKE;
-		hndl.id = stroke_store_hit_nearest(&canvas->stroke_store, v, NULL);
-	}
-
-	if (hndl.id == -1) {
-		hndl.kind = OBJECT_KIND_NONE;
+	if (hndl.kind == OBJECT_KIND_NONE) {
+		hndl = stroke_store_hit_nearest(&canvas->stroke_store, v, NULL);
 	}
 	return hndl;
 }
