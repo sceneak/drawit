@@ -25,7 +25,6 @@
 #define PEN_PT_INIT { .coord = { FLT_MAX, FLT_MAX }, .pressure = .5 }
 #define FONT_SIZE_DEFAULT 64.0
 
-
 /* ==============================
  * CORE DATA STRUCTURES 
  * ==============================
@@ -39,17 +38,18 @@ struct pen_pt {
 #define NAME da_pen_pt
 #include "da.t.h"
 
+struct object_data {
+	int    group_id;
+	vec2   transl;
+	rect   bounds;
+	bool   deleted;
+};
+
 enum object_kind {
 	OBJECT_KIND_NONE,
 	OBJECT_KIND_GROUP,
 	OBJECT_KIND_STROKE,
 	OBJECT_KIND_TEXT,
-};
-
-struct object_data {
-	vec2   transl;
-	rect   bounds;
-	bool   deleted;
 };
 
 struct object_handle {
@@ -299,6 +299,16 @@ static const pfh_stroke_opts STROKE_OPTS = {
 	.last = false,
 };
 
+static const struct object_data OBJ_DEFAULT = {
+	.group_id = -1,
+	.bounds = {
+		.x0 = INFINITY,
+		.y0 = INFINITY,
+		.x1 = -INFINITY,
+		.y1 = -INFINITY
+	}
+};
+
 static struct drawit_ctx g_drawit = {
 	.status_line = {
 		.verbosity = 1
@@ -431,14 +441,12 @@ void stroke_store_print(const struct stroke_store *store)
 void stroke_store_begin(struct stroke_store *store, const color *colors)
 {
 	da_stroke_desc_append(&store->desc_da, (struct stroke_desc) { 
-		.obj.bounds   = BOUNDS_INIT,
-
+		.obj          = OBJ_DEFAULT,
 		.input_idx    = store->input_da->count, 
 		.input_count  = 0,
 		.vertex_idx   = store->pfh_vertex_buf.count, 
 		.vertex_count = 0,
 		.colors       = colors,
-		.obj.deleted      = false,
 	});
 	store->desc_max_count = store->desc_da->count;
 }
@@ -561,17 +569,17 @@ int stroke_store_hit_nearest(const struct stroke_store *store, vec2 v, float *di
 struct text_obj text_obj_create(const color *colors, int font_handle, float font_size, vec2 transl)
 {
 	const float LEADING_RATIO = 1.2f;
-
-	return (struct text_obj) {
-		.obj.transl = transl,
-		.obj.bounds = BOUNDS_INIT,
-
+	struct text_obj txt = {
+		.obj         = OBJ_DEFAULT,
 		.font_handle = font_handle,
-		.font_size = font_size,
+		.font_size   = font_size,
 		.line_height = font_size * LEADING_RATIO,
-		.colors = colors,
-		.buf = gapbuf_create(GAPBUF_INITIAL_ALLOC),
+		.colors      = colors,
+		.buf         = gapbuf_create(GAPBUF_INITIAL_ALLOC),
 	};
+
+	txt.obj.transl = transl;
+	return txt;
 }
 
 void text_store_print(const struct text_store *store)
@@ -696,36 +704,27 @@ void text_store_restore_last(const struct text_store *store)
 }
 
 /* CANVAS: GROUPS */
+int group_store_next_id(struct group_store *store)
+{
+	return store->group_da->count;
+}
+
 void group_store_append_owned(struct group_store *store, struct object_handle *hndls, size_t count, rect bounds)
 {
-	struct group g = {0};
+	struct group grp = {
+		.obj          = OBJ_DEFAULT,
+		.members      = hndls,
+		.member_count = count
+	};
 	size_t i;
 
-	g.members = hndls;
-	g.member_count = count;
-	g.obj.bounds = bounds;
+	grp.obj.bounds = bounds;
 
 	for (i = store->group_da->count; i < store->group_max_count; i++) {
 		free(store->group_da->elems[i].members);
 	}
-	da_group_append(&store->group_da, g);
+	da_group_append(&store->group_da, grp);
 	store->group_max_count = store->group_da->count;
-}
-
-void group_store_delete_last(struct group_store *store)
-{
-	store->group_da->count--;
-}
-
-void group_store_restore_last(struct group_store *store)
-{
-	assert(store->group_da->count < store->group_max_count);
-	store->group_da->count++;
-}
-
-void group_store_set_deleted(struct group_store *store, int id, bool deleted)
-{
-	store->group_da->elems[id].obj.deleted = deleted;
 }
 
 int group_store_hit(const struct group_store *store, vec2 v)
@@ -759,27 +758,6 @@ struct object_data *canvas_object_get(const struct canvas *canvas, struct object
 	case OBJECT_KIND_GROUP: return &canvas->group_store.group_da->elems[hndl.id].obj;
 	default: return NULL;
 	}
-}
-
-int canvas_object_group_owned(struct canvas *canvas, struct object_handle *hndls, size_t count)
-{
-	struct object_data *obj;
-	rect global_bounds;
-	size_t i;
-
-	if (count < 2) return -1;
-
-	obj = canvas_object_get(canvas, hndls[0]);
-	global_bounds = rect_transl(obj->bounds, obj->transl);
-
-	for (i = 1; i < count; i++) {
-		obj = canvas_object_get(canvas, hndls[i]);
-		rect obj_global = rect_transl(obj->bounds, obj->transl);
-		global_bounds = rect_fit_rect(global_bounds, obj_global);
-	}
-
-	group_store_append_owned(&canvas->group_store, hndls, count, global_bounds);
-	return 0;
 }
 
 void canvas_object_set_deleted(struct canvas *canvas, struct object_handle hndl, bool deleted)
@@ -839,6 +817,72 @@ struct object_handle canvas_object_hit(struct canvas *canvas, vec2 v)
 
 struct object_handle canvas_object_hit_region(struct canvas *canvas, rect region);
 
+/* CANVAS OBJ GROUPING */
+int canvas_object_group_owned(struct canvas *canvas, struct object_handle *hndls, size_t count)
+{
+	struct object_data *obj;
+	rect global_bounds;
+	size_t i;
+	int future_id;
+
+	if (count < 2) return -1;
+
+	future_id = group_store_next_id(&canvas->group_store);
+
+	obj = canvas_object_get(canvas, hndls[0]);
+	obj->group_id = future_id;
+	global_bounds = rect_transl(obj->bounds, obj->transl);
+
+	for (i = 1; i < count; i++) {
+		obj = canvas_object_get(canvas, hndls[i]);
+
+		obj->group_id = future_id;
+		rect obj_global = rect_transl(obj->bounds, obj->transl);
+		global_bounds = rect_fit_rect(global_bounds, obj_global);
+	}
+
+	group_store_append_owned(&canvas->group_store, hndls, count, global_bounds);
+	return 0;
+}
+
+void canvas_group__update_members_group(struct canvas *canvas, int group_id, bool deleted)
+{
+	struct da_group *group_da = canvas->group_store.group_da;
+	struct object_data *obj;
+	struct group *grp;
+	size_t i;
+
+	grp = group_da->elems + group_id;
+
+	for (i = 0; i < grp->member_count; i++) {
+		obj = canvas_object_get(canvas, grp->members[i]);
+		obj->group_id = deleted ? -1 : group_id;
+	}
+}
+
+void canvas_group_delete_last(struct canvas *canvas)
+{
+	struct da_group *group_da = canvas->group_store.group_da;
+	group_da->count--;
+	canvas_group__update_members_group(canvas, group_da->count, -1);
+}
+
+void canvas_group_restore_last(struct canvas *canvas)
+{
+	struct da_group *group_da = canvas->group_store.group_da;
+	assert(group_da->count < canvas->group_store.group_max_count);
+	group_da->count++;
+
+	canvas_group__update_members_group(canvas, group_da->count-1, group_da->count-1);
+}
+
+void canvas_group_set_deleted(struct canvas *canvas, int id, bool deleted)
+{
+	struct da_group *group_da = canvas->group_store.group_da;
+	group_da->elems[id].obj.deleted = deleted;
+	canvas_group__update_members_group(canvas, id, -1);
+}
+
 /* ==============================
  * CMD
  * ==============================
@@ -878,10 +922,10 @@ void cmd_undo(struct cmd c, struct canvas *canvas)
 		}
 		break;
 	case CMD_GROUP_DELETE:
-		group_store_set_deleted(&canvas->group_store, c.v.obj.id, false);
+		canvas_group_set_deleted(canvas, c.v.obj.id, false);
 		break;
 	case CMD_OBJECT_GROUP:
-		group_store_delete_last(&canvas->group_store);
+		canvas_group_delete_last(canvas);
 		break;
 	case CMD_STROKE_CREATE:
 		stroke_store_delete_last(&canvas->stroke_store);
@@ -909,10 +953,10 @@ void cmd_redo(struct cmd c, struct canvas *canvas)
 		}
 		break;
 	case CMD_GROUP_DELETE:
-		group_store_set_deleted(&canvas->group_store, c.v.obj.id, true);
+		canvas_group_set_deleted(canvas, c.v.obj.id, true);
 		break;
 	case CMD_OBJECT_GROUP:
-		group_store_restore_last(&canvas->group_store);
+		canvas_group_restore_last(canvas);
 		break;
 	case CMD_STROKE_CREATE:
 		stroke_store_restore_last(&canvas->stroke_store);
@@ -1046,7 +1090,7 @@ static void drawit_delete_group(struct drawit_ctx *drawit)
 
 	if (selection_da->elems[0].kind != OBJECT_KIND_GROUP) return;
 
-	group_store_set_deleted(&canvas->group_store, selection_da->elems[0].id, true);
+	canvas_group_set_deleted(canvas, selection_da->elems[0].id, true);
 	canvas_hist_record(hist, cmd_obj_make(CMD_GROUP_DELETE, selection_da->elems[0]));
 }
 

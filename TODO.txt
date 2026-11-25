@@ -12,6 +12,16 @@
 
 # Todo
 [] Box Select
+	[] Impl group_id to object_data
+		[v] add obj init to text, stroke, groups
+		[v] update group creations
+		[v] update delete & restores
+		[v] test if it works
+	[] optional: hit test upwards
+	[] Impl hit_region for text, stroke, groups
+		[] add bools for root only scan
+	[] Use hit_region for SELECT mode
+
 [] Enter edit mode with a filter for selection
 [] Copy Paste Objects
 [] Status Line Messages for delete, drag, undo/redo

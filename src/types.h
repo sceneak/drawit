@@ -10,13 +10,6 @@
         }
 #define COLOR_FROM_HEX(hex) (color) COLOR_INIT_HEX(hex)
 
-#define BOUNDS_INIT {    \
-                .x0 = INFINITY,  \
-                .y0 = INFINITY,  \
-                .x1 = -INFINITY, \
-                .y1 = -INFINITY, \
-        }
-
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
