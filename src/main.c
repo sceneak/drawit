@@ -210,7 +210,7 @@ enum theme {
 
 enum mode {
 	MODE_NORMAL,
-	MODE_EDIT,
+	MODE_SELECT,
 	MODE_DRAW,
 	MODE_COMMAND,
 	MODE_TEXT,
@@ -231,9 +231,8 @@ struct status_line {
 };
 
 enum select_kind {
-	SELECT_NONE,
 	SELECT_NEAREST,
-	/* SELECT_BOX, */
+	SELECT_BOX,
 };
 
 struct drawit_ctx {
@@ -241,6 +240,7 @@ struct drawit_ctx {
 
 	enum theme               theme;
 	enum mode                mode;
+	enum mode                exit_mode;
 
 	struct status_line       status_line;
 
@@ -996,15 +996,81 @@ static int canvas_hist_redo(struct canvas_hist *hist)
 }
 
 /* ==============================
+ * DRAWIT HELPERS
+ * ==============================
+ */
+static void drawit_select_mouse(struct drawit_ctx *drawit)
+{
+	struct da_object_handle **selection = &drawit->selection_da;
+	struct canvas *canvas = &drawit->canvas;
+	struct mouse *mouse = &drawit->gfx.mouse;
+	struct object_handle hndl;
+
+	hndl = canvas_object_hit(canvas, mouse->world);
+	if (hndl.kind == OBJECT_KIND_NONE) {
+		(*selection)->count = 0;
+		return;
+	}
+
+	if (!(*selection)->count) {
+		da_object_handle_append_empty(selection, 1);
+	} else {
+		(*selection)->count = 1;
+	}
+	(*selection)->elems[0] = hndl;
+}
+
+static void drawit_select_region(struct drawit_ctx *drawit);
+
+static void drawit_delete_selection(struct drawit_ctx *drawit)
+{
+	struct da_object_handle *selection_da = drawit->selection_da;
+	struct canvas *canvas = &drawit->canvas;
+	struct canvas_hist *hist = &drawit->hist;
+
+	struct object_handle *hndls;
+	size_t i;
+
+	for (i = 0; i < selection_da->count; i++) {
+		canvas_object_set_deleted(canvas, selection_da->elems[i], true);
+	}
+	hndls = da_object_handle_elemdup(selection_da);
+	canvas_hist_record(hist, cmd_objs_make(CMD_OBJECT_DELETE, hndls, selection_da->count));
+}
+
+static void drawit_delete_group(struct drawit_ctx *drawit)
+{
+	struct da_object_handle *selection_da = drawit->selection_da;
+	struct canvas *canvas = &drawit->canvas;
+	struct canvas_hist *hist = &drawit->hist;
+
+	if (selection_da->elems[0].kind != OBJECT_KIND_GROUP) return;
+
+	group_store_set_deleted(&canvas->group_store, selection_da->elems[0].id, true);
+	canvas_hist_record(hist, cmd_obj_make(CMD_GROUP_DELETE, selection_da->elems[0]));
+}
+
+
+/* ==============================
  * MODES
  * ==============================
  */
-static void mode_switch_normal(void);
-static void mode_switch_edit(enum select_kind kind);
-static void mode_switch_draw(void);
-static void mode_switch_command(void);
-static void mode_switch_text(int edit_id);
-static void mode_switch_drag(void);
+static void mode_enter_normal(void);
+static void mode_enter_select(void);
+static void mode_enter_draw(void);
+static void mode_enter_command(void);
+static void mode_enter_text(int edit_id);
+static void mode_enter_drag(void);
+
+static void mode_exit_set(void) { g_drawit.exit_mode = g_drawit.mode; }
+static void mode_exit(void)
+{
+	switch(g_drawit.exit_mode) {
+	case MODE_SELECT: mode_enter_select(); break;
+	default: mode_enter_normal();
+	}
+	g_drawit.exit_mode = MODE_NORMAL;
+}
 
 /* MODE: NORMAL */
 static void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *e)
@@ -1046,11 +1112,11 @@ static int mode_normal_event_transitions(const sapp_event *e)
 	switch (e->type) {
 	case SAPP_EVENTTYPE_CHAR: 
 		if (e->char_code == ':') {
-			mode_switch_command();
+			mode_enter_command();
 			return 1;
 		}
 		if (e->char_code == 'i') {
-			mode_switch_text(-1);
+			mode_enter_text(-1);
 			return 1;
 		}
 		break;
@@ -1083,10 +1149,12 @@ static void mode_normal_event(const sapp_event *e)
 		else if (e->mouse_button == SAPP_MOUSEBUTTON_RIGHT)
 			pen->active_colors = &pen->colors_secondary;
 		else break;
-		mode_switch_draw();
+		mode_enter_draw();
 		break;
 	/* Keyboard */
 	case SAPP_EVENTTYPE_KEY_DOWN:
+		if (e->key_repeat) break;
+
 		pen->active_colors = &pen->colors_primary;
 		if (e->modifiers & SAPP_MODIFIER_ALT)
 			pen->active_colors = &pen->colors_secondary;
@@ -1118,15 +1186,28 @@ static void mode_normal_event(const sapp_event *e)
 				}
 			}
 			break;
-		case SAPP_KEYCODE_X:
-		case SAPP_KEYCODE_S:
-			mode_switch_edit(SELECT_NEAREST);
+		case SAPP_KEYCODE_W:
+			drawit_select_mouse(&g_drawit);
+			if (!g_drawit.selection_da->count) break;
+			mode_exit_set();
+			mode_enter_drag();
 			break;
-		case SAPP_KEYCODE_Q:
-			if ( !(e->modifiers & SAPP_MODIFIER_CTRL) ) break;
-
+		case SAPP_KEYCODE_S:
+			mode_enter_select();
+			break;
+		case SAPP_KEYCODE_X:
+			drawit_select_mouse(&g_drawit);
+			if (!g_drawit.selection_da->count) break;
+			drawit_delete_selection(&g_drawit);
+			g_drawit.selection_da->count = 0;
+			break;
+		case SAPP_KEYCODE_A:
 			if (e->modifiers & SAPP_MODIFIER_SHIFT) {
-				mode_switch_edit(SELECT_NEAREST);
+				drawit_select_mouse(&g_drawit);
+				if (!g_drawit.selection_da->count) break;
+
+				drawit_delete_group(&g_drawit);
+				g_drawit.selection_da->count = 0;
 				break;
 			}
 
@@ -1163,7 +1244,7 @@ static void mode_normal_event(const sapp_event *e)
 	}
 }
 
-static void mode_switch_normal(void)
+static void mode_enter_normal(void)
 {
 	struct da_object_handle *selection = g_drawit.selection_da;
 
@@ -1174,91 +1255,40 @@ static void mode_switch_normal(void)
 	selection->count = 0;
 }
 
-/* MODE: EDIT */
-static void mode_edit_event_select_nearest(const sapp_event *e)
-{
-	struct da_object_handle **selection = &g_drawit.selection_da;
-	struct mouse *mouse = &g_drawit.gfx.mouse;
-	struct canvas *canvas = &g_drawit.canvas;
-	struct object_handle hndl;
-
-	(void)e;
-
-	hndl = canvas_object_hit(canvas, mouse->world);
-	if (hndl.kind == OBJECT_KIND_NONE) {
-		(*selection)->count = 0;
-		return;
-	}
-
-	if (!(*selection)->count) {
-		da_object_handle_append_empty(selection, 1);
-	} else {
-		(*selection)->count = 1;
-	}
-	(*selection)->elems[0] = hndl;
-}
-
-static void mode_edit_event_select(const sapp_event *e)
+/* MODE: SELECT */
+static void mode_select_event(const sapp_event *e)
 {
 	switch(g_drawit.select_kind) {
 	case SELECT_NEAREST:
-		mode_edit_event_select_nearest(e);
+		drawit_select_mouse(&g_drawit);
 		break;
-	default: return;
+	case SELECT_BOX:
+		/* drawit_select_region(&g_drawit.selection_da, &g_drawit.canvas, ); */
+		break;
+	default: break;
 	}
-}
-
-static void mode_edit_event(const sapp_event *e)
-{
-	struct da_object_handle *selection_da = g_drawit.selection_da;
-	struct canvas *canvas = &g_drawit.canvas;
-	struct canvas_hist *hist = &g_drawit.hist;
-	struct object_handle *hndls;
-	size_t i;
-
-	mode_edit_event_select(e);
 
 	switch (e->type) {
-	case SAPP_EVENTTYPE_KEY_UP:
-		switch (e->key_code) {
-		case SAPP_KEYCODE_S:
-			if (!selection_da->count) break;
-			mode_switch_drag();
-			return; /* prevents from switching to normal */
-		case SAPP_KEYCODE_X:
-			if (!selection_da->count) break;
-			for (i = 0; i < selection_da->count; i++) {
-				canvas_object_set_deleted(canvas, selection_da->elems[i], true);
-			}
-			hndls = da_object_handle_elemdup(selection_da);
-			canvas_hist_record(hist, cmd_objs_make(CMD_OBJECT_DELETE, hndls, selection_da->count));
-			mode_switch_normal();
-			break;
-		case SAPP_KEYCODE_Q:
-			if ( !(e->modifiers & SAPP_MODIFIER_CTRL) ) break;
-			if ( !(e->modifiers & SAPP_MODIFIER_SHIFT) ) break;
+	case SAPP_EVENTTYPE_KEY_DOWN:
+		if (e->key_repeat) break;
 
-			if (!selection_da->count) break;
-			if (selection_da->elems[0].kind != OBJECT_KIND_GROUP) break;
-
-			group_store_set_deleted(&canvas->group_store, selection_da->elems[0].id, true);
-			canvas_hist_record(hist, cmd_obj_make(CMD_GROUP_DELETE, selection_da->elems[0]));
+		switch(e->key_code) {
+		case SAPP_KEYCODE_ESCAPE:
+			mode_exit();
 			break;
 		default: break;
 		}
-		mode_switch_normal();
 		break;
 	default:
 		break;
 	}
 }
 
-static void mode_switch_edit(enum select_kind kind)
+static void mode_enter_select(void)
 {
-	g_drawit.mode = MODE_EDIT;
-	g_drawit.select_kind = kind;
-	g_drawit.gfx.mouse.hide = false;
-	sapp_show_mouse(false);
+	g_drawit.mode = MODE_SELECT;
+	g_drawit.gfx.mouse.hide = true;
+	sapp_show_mouse(true);
 }
 
 /* MODE: DRAG */
@@ -1283,19 +1313,21 @@ static void mode_drag_event(const sapp_event *e)
 		break;
 
 	case SAPP_EVENTTYPE_KEY_DOWN:
+		if (e->key_repeat) break;
+
 		switch (e->key_code) {
-		case SAPP_KEYCODE_S:
+		case SAPP_KEYCODE_W:
 			d = vec2_sub(g_drawit.drag_end, g_drawit.drag_start);
 			hndls = da_object_handle_elemdup(selection_da);
 			canvas_hist_record(hist, cmd_objects_drag_make(hndls, selection_da->count, d));
-			mode_switch_normal();
+			mode_exit();
 			break;
 		case SAPP_KEYCODE_ESCAPE:
 			d = vec2_sub(g_drawit.drag_start, g_drawit.drag_end);
 			for (i = 0; i < selection_da->count; i++) { 
 				canvas_object_transl(canvas, selection_da->elems[i], d);
 			}
-			mode_switch_normal();
+			mode_exit();
 		default: break;
 		}
 		break;
@@ -1304,7 +1336,7 @@ static void mode_drag_event(const sapp_event *e)
 	}
 }
 
-static void mode_switch_drag(void)
+static void mode_enter_drag(void)
 {
 	struct graphic_ctx *gfx = &g_drawit.gfx;
 
@@ -1337,7 +1369,7 @@ static void mode_draw_event(const sapp_event *e)
 
 	switch (e->type) {
 	case SAPP_EVENTTYPE_MOUSE_UP:
-		mode_switch_normal();
+		mode_exit();
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		mode_draw_stroke_try_append(store, pen->curr_pt);
@@ -1346,7 +1378,7 @@ static void mode_draw_event(const sapp_event *e)
 	}
 }
 
-static void mode_switch_draw(void)
+static void mode_enter_draw(void)
 {
 	struct graphic_ctx *gfx = &g_drawit.gfx;
 	struct status_line *status = &g_drawit.status_line;
@@ -1422,17 +1454,17 @@ static void mode_command_event(const sapp_event *e)
 		status->buf[status->len] = '\0';
 		command_exec(status->buf); /* status line is reused to write results. don't zero */
 
-		mode_switch_normal();
+		mode_exit();
 		break;
 	case SAPP_KEYCODE_ESCAPE:
-		mode_switch_normal();
+		mode_exit();
 		status->len = 0;
 		break;
 	default: break;
 	}
 }
 
-static void mode_switch_command(void)
+static void mode_enter_command(void)
 {
 	struct graphic_ctx *gfx = &g_drawit.gfx;
 	struct status_line *status = &g_drawit.status_line;
@@ -1480,7 +1512,7 @@ static void mode_text_event(const sapp_event *e)
 		break;
 	case SAPP_KEYCODE_ESCAPE:
 		g_drawit.active_text_id = -1;
-		mode_switch_normal();
+		mode_exit();
 		break;
 	default: break;
 	}
@@ -1490,7 +1522,7 @@ static void mode_text_event(const sapp_event *e)
 	}
 }
 
-static void mode_switch_text(int edit_id)
+static void mode_enter_text(int edit_id)
 {
 	struct text_store *store = &g_drawit.canvas.text_store;
 	struct canvas_hist *hist = &g_drawit.hist;
@@ -1764,7 +1796,7 @@ void init(void)
 
 	gfx->font_handle = nvgCreateFontMem(gfx->vg, "Inconsolata-Regular-Sub", (u8 *)inconsolata_ttf, inconsolata_ttf_len, 0);
 
-	mode_switch_normal();
+	mode_exit();
 
 #ifdef _WIN32
 	#include <windows.h>
@@ -1832,8 +1864,8 @@ void event(const sapp_event *e)
 	case MODE_NORMAL:
 		mode_normal_event(e);
 		break;
-	case MODE_EDIT:
-		mode_edit_event(e);
+	case MODE_SELECT:
+		mode_select_event(e);
 		break;
 	case MODE_DRAW:
 		mode_draw_event(e);

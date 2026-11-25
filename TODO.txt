@@ -1,18 +1,24 @@
-# Todo
-[] Groups
-Requirements:
-- Must be flat (no hierarchical renders, transl & state is global)
-- This means Obj -> Children access is needed to propagate changes down
-- Upwards traversal is also needed when 
+# Plan for Controls & Layout
+[] From NORMAL mode:
+	[] Keydown e enters SELECT mode
+		[] Mouse Left Down->Move->Up selects a box area
+		[] Keydown x deletes objects
+		[] Keydown w OR Mouse Mid Down enters drag mode
+		[] Keydown a Groups
+		[] Keydown A Ungroups
+	[] Keydown x or keydown w stays in normal mode but selects the object directly under the cursor
+		[] Keydown x deletes objects
+		[] Keydown w enters drag mode
 
+# Todo
+[] Box Select
 [] Enter edit mode with a filter for selection
+[] Copy Paste Objects
 [] Status Line Messages for delete, drag, undo/redo
 [] Edit text
 	[] Text cleanup
 [] Canvas.h Separation
-[] Canvas Serialization
-[] Copy Paste Segments
-[] Animate
+[] Canvas Serialization: SVG or Binary?
 [] Paste image
-[] Status
-[] Prefer struct ptr elem over vl members so NO_DISCARD isn't necessary
+[] Preset Objects
+[] Animate
