@@ -230,9 +230,9 @@ struct status_line {
 	size_t len;
 };
 
-enum select_kind {
-	SELECT_NEAREST,
-	SELECT_BOX,
+enum select_state {
+	SELECT_STATE_SINGLE,
+	SELECT_STATE_BOX,
 };
 
 struct drawit_ctx {
@@ -246,8 +246,12 @@ struct drawit_ctx {
 
 	struct pen               pen;
 
-	enum select_kind         select_kind;
+	enum select_state        select_state;
 	struct da_object_handle *selection_da;
+	vec2                     select_anchor;
+	rect                     select_rect;
+	bool                     is_selecting_rect;
+
 	bool                     hide_selection_outline;
 
 	bool                     is_grouping;
@@ -280,8 +284,15 @@ static const color COLOR_RASPBERRY = COLOR_INIT_HEX(0xD81B60FF);
 static const color COLOR_TURQUOISE = COLOR_INIT_HEX(0x40E0D0FF);
 static const color COLOR_TEAL = COLOR_INIT_HEX(0x009688FF);
 
+static const color COLOR_SOFT_LAVENDER  = COLOR_INIT_HEX(0xC084FCFF);
+static const color COLOR_DEEP_VIOLET = COLOR_INIT_HEX(0x7C3AEDFF);
+static const color COLOR_SKY_BLUE = COLOR_INIT_HEX(0x38BDF8FF);
+static const color COLOR_DEEP_BLUE = COLOR_INIT_HEX(0x2563EBFF);
+
 static const color COLORS_BACKGROUND[THEME_MAX] = { COLOR_DEEP_CHARCOAL, COLOR_SKIN };
 static const color COLORS_CONTRAST[THEME_MAX] = { COLOR_SKIN, COLOR_DEEP_CHARCOAL };
+static const color COLORS_OUTLINE[THEME_MAX] = { COLOR_SOFT_LAVENDER, COLOR_DEEP_VIOLET };
+static const color COLORS_SELECT[THEME_MAX] = { COLOR_SKY_BLUE, COLOR_DEEP_BLUE };
 static const color COLORS_YELLOW[THEME_MAX] = { COLOR_SCENE, COLOR_MARIGOLD };
 static const color COLORS_BLUE[THEME_MAX] = { COLOR_TURQUOISE, COLOR_TEAL };
 static const color COLORS_RED[THEME_MAX] = { COLOR_HOTPINK, COLOR_RASPBERRY };
@@ -548,9 +559,7 @@ struct object_handle stroke_store_hit_nearest(const struct stroke_store *store, 
 
 	for (i = 0; i < store->desc_da->count; i++) {
 		desc = store->desc_da->elems + i;
-
-		if (store->desc_da->elems[i].obj.deleted)
-			continue;
+		if (desc->obj.deleted) continue;
 
 		global_bounds = rect_transl(desc->obj.bounds, desc->obj.transl);
 		if (!rect_contains(global_bounds, v))
@@ -567,6 +576,25 @@ struct object_handle stroke_store_hit_nearest(const struct stroke_store *store, 
 
 	if (nearest_stroke_idx == -1) return HANDLE_DEFAULT;
 	return (struct object_handle) { .id = nearest_stroke_idx, .kind = OBJECT_KIND_STROKE };
+}
+
+void stroke_store_hit_rect(const struct stroke_store *store, struct da_object_handle **hndls, rect r, bool root_only)
+{
+	struct stroke_desc *desc;
+	rect global_bounds;
+	size_t i;
+
+	for (i = 0; i < store->desc_da->count; i++) {
+		desc = store->desc_da->elems + i;
+		if (desc->obj.deleted) continue;
+		if (desc->obj.group_id != -1 && root_only) continue;
+
+		global_bounds = rect_transl(desc->obj.bounds, desc->obj.transl);
+		if (!rect_overlaps(global_bounds, r)) continue;
+
+		da_object_handle_append(hndls, (struct object_handle) { .id = i,
+		                                                        .kind = OBJECT_KIND_STROKE });
+	}
 }
 
 /* CANVAS: TEXT */
@@ -689,11 +717,30 @@ struct object_handle text_store_hit(const struct text_store *store, vec2 v)
 		if (txt->obj.deleted) continue;
 
 		global_bounds = rect_transl(txt->obj.bounds, txt->obj.transl);
-		if (!rect_contains(global_bounds, v))
-			continue;
+		if (!rect_contains(global_bounds, v)) continue;
+
 		return (struct object_handle) { .id = i, .kind = OBJECT_KIND_TEXT };
 	}
 	return HANDLE_DEFAULT;
+}
+
+void text_store_hit_rect(const struct text_store *store, struct da_object_handle **hndls_da, rect r, bool root_only)
+{
+	struct text_obj *txt;
+	rect global_bounds;
+	size_t i;
+
+	for (i = 0; i < store->text_da->count; i++) {
+		txt = store->text_da->elems + i;
+		if (txt->obj.deleted) continue;
+		if (txt->obj.group_id != -1 && root_only) continue;
+
+		global_bounds = rect_transl(txt->obj.bounds, txt->obj.transl);
+		if (!rect_overlaps(global_bounds, r)) continue;
+
+		da_object_handle_append(hndls_da, (struct object_handle){ .id = i,
+		                                                          .kind = OBJECT_KIND_TEXT });
+	}
 }
 
 void text_store_delete_last(const struct text_store *store)
@@ -742,11 +789,29 @@ struct object_handle group_store_hit(const struct group_store *store, vec2 v)
 		if (grp->obj.deleted) continue;
 
 		global_bounds = rect_transl(grp->obj.bounds, grp->obj.transl);
-		if (!rect_contains(global_bounds, v))
-			continue;
+		if (!rect_contains(global_bounds, v)) continue;
+
 		return (struct object_handle) { .id = i, .kind = OBJECT_KIND_GROUP };
 	}
 	return HANDLE_DEFAULT;
+}
+
+void group_store_hit_rect(const struct group_store *store, struct da_object_handle **hndls_da, rect r, bool root_only)
+{
+	struct group *grp;
+	rect global_bounds;
+	size_t i;
+
+	for (i = 0; i < store->group_da->count; i++) {
+		grp = store->group_da->elems + i;
+		if (grp->obj.deleted) continue;
+		if (grp->obj.group_id != -1 && root_only) continue;
+
+		global_bounds = rect_transl(grp->obj.bounds, grp->obj.transl);
+		if (!rect_overlaps(global_bounds, r)) continue;
+
+		da_object_handle_append(hndls_da, (struct object_handle) { .id = i, .kind = OBJECT_KIND_GROUP });
+	}
 }
 
 /* CANVAS: GENERAL OBJ FUNC */
@@ -810,7 +875,12 @@ struct object_handle canvas_object_hit(struct canvas *canvas, vec2 v)
 	return hndl;
 }
 
-struct object_handle canvas_object_hit_region(struct canvas *canvas, rect region);
+void canvas_object_hit_rect(struct canvas *canvas, struct da_object_handle **hndls_da, rect r)
+{
+	group_store_hit_rect(&canvas->group_store, hndls_da, r, true);
+	text_store_hit_rect(&canvas->text_store, hndls_da, r, true);
+	stroke_store_hit_rect(&canvas->stroke_store, hndls_da, r, true);
+}
 
 /* CANVAS OBJ GROUPING */
 int canvas_object_group_owned(struct canvas *canvas, struct object_handle *hndls, size_t count)
@@ -1038,28 +1108,48 @@ static int canvas_hist_redo(struct canvas_hist *hist)
  * DRAWIT HELPERS
  * ==============================
  */
-static void drawit_select_mouse(struct drawit_ctx *drawit)
+static void drawit_undo(struct drawit_ctx *drawit)
+{
+	if (canvas_hist_undo(&drawit->hist) == -1) {
+		status_line_set(&drawit->status_line, 0, "Already at oldest history");
+	}
+}
+static void drawit_redo(struct drawit_ctx *drawit)
+{
+	if (canvas_hist_redo(&drawit->hist) == -1) {
+		status_line_set(&drawit->status_line, 0, "Already at newest change");
+	}
+}
+
+static int drawit_select_mouse(struct drawit_ctx *drawit)
 {
 	struct da_object_handle **selection = &drawit->selection_da;
 	struct canvas *canvas = &drawit->canvas;
 	struct mouse *mouse = &drawit->gfx.mouse;
-	struct object_handle hndl;
-
-	hndl = canvas_object_hit(canvas, mouse->world);
-	if (hndl.kind == OBJECT_KIND_NONE) {
-		(*selection)->count = 0;
-		return;
-	}
 
 	if (!(*selection)->count) {
 		da_object_handle_append_empty(selection, 1);
-	} else {
+	} else if ((*selection)->count > 1) {
 		(*selection)->count = 1;
 	}
-	(*selection)->elems[0] = hndl;
+
+	(*selection)->elems[0] = canvas_object_hit(canvas, mouse->world);
+
+	if ((*selection)->elems[0].kind == OBJECT_KIND_NONE) {
+		(*selection)->count = 0;
+		return -1;
+	}
+	return 0;
 }
 
-static void drawit_select_region(struct drawit_ctx *drawit);
+static void drawit_select_rect(struct drawit_ctx *drawit)
+{
+	struct da_object_handle **selection = &drawit->selection_da;
+	struct canvas *canvas = &drawit->canvas;
+
+	(*selection)->count = 0;
+	canvas_object_hit_rect(canvas, selection, g_drawit.select_rect);
+}
 
 static void drawit_delete_selection(struct drawit_ctx *drawit)
 {
@@ -1075,6 +1165,19 @@ static void drawit_delete_selection(struct drawit_ctx *drawit)
 	}
 	hndls = da_object_handle_elemdup(selection_da);
 	canvas_hist_record(hist, cmd_objs_make(CMD_OBJECT_DELETE, hndls, selection_da->count));
+	selection_da->count = 0;
+}
+
+static void drawit_group_owned(struct drawit_ctx *drawit, struct object_handle *hndls, size_t count)
+{
+	struct canvas *canvas = &drawit->canvas;
+	struct canvas_hist *hist = &drawit->hist;
+
+	if (canvas_object_group_owned(canvas, hndls, count) != 0) {
+		free(hndls);
+		return;
+	}
+	canvas_hist_record(hist, cmd_make(CMD_OBJECT_GROUP));
 }
 
 static void drawit_delete_group(struct drawit_ctx *drawit)
@@ -1087,6 +1190,7 @@ static void drawit_delete_group(struct drawit_ctx *drawit)
 
 	canvas_group_set_deleted(canvas, selection_da->elems[0].id, true);
 	canvas_hist_record(hist, cmd_obj_make(CMD_GROUP_DELETE, selection_da->elems[0]));
+	selection_da->count = 0;
 }
 
 
@@ -1168,7 +1272,6 @@ static void mode_normal_event(const sapp_event *e)
 {
 	struct canvas_checkpoint *checkpt = &g_drawit.group_checkpoint;
 	struct canvas *canvas = &g_drawit.canvas;
-	struct canvas_hist *hist = &g_drawit.hist;
 	struct pen *pen = &g_drawit.pen;
 	struct status_line *status = &g_drawit.status_line;
 	struct graphic_ctx *gfx = &g_drawit.gfx;
@@ -1213,21 +1316,16 @@ static void mode_normal_event(const sapp_event *e)
 			break;
 		case SAPP_KEYCODE_Z:
 			if (e->modifiers & SAPP_MODIFIER_CTRL) {
-				if (canvas_hist_undo(hist) == -1) {
-					status_line_set(status, 0, "Already at oldest history");
-				}
+				drawit_undo(&g_drawit);
 			}
 			break;
 		case SAPP_KEYCODE_R:
 			if (e->modifiers & SAPP_MODIFIER_CTRL) {
-				if (canvas_hist_redo(hist) == -1) {
-					status_line_set(status, 0, "Already at newest change");
-				}
+				drawit_redo(&g_drawit);
 			}
 			break;
 		case SAPP_KEYCODE_W:
-			drawit_select_mouse(&g_drawit);
-			if (!g_drawit.selection_da->count) break;
+			if (drawit_select_mouse(&g_drawit) != 0) break;
 			mode_exit_set();
 			mode_enter_drag();
 			break;
@@ -1235,21 +1333,10 @@ static void mode_normal_event(const sapp_event *e)
 			mode_enter_select();
 			break;
 		case SAPP_KEYCODE_X:
-			drawit_select_mouse(&g_drawit);
-			if (!g_drawit.selection_da->count) break;
+			if (drawit_select_mouse(&g_drawit) != 0) break;
 			drawit_delete_selection(&g_drawit);
-			g_drawit.selection_da->count = 0;
 			break;
 		case SAPP_KEYCODE_A:
-			if (e->modifiers & SAPP_MODIFIER_SHIFT) {
-				drawit_select_mouse(&g_drawit);
-				if (!g_drawit.selection_da->count) break;
-
-				drawit_delete_group(&g_drawit);
-				g_drawit.selection_da->count = 0;
-				break;
-			}
-
 			if (g_drawit.is_grouping) {
 				g_drawit.is_grouping = false;
 
@@ -1257,11 +1344,7 @@ static void mode_normal_event(const sapp_event *e)
 					status_line_set(status, 1, "Invalid Grouping Checkpoint");
 					break;
 				}
-				if (canvas_object_group_owned(canvas, hndls, count) != 0) {
-					free(hndls);
-					break;
-				}
-				canvas_hist_record(hist, cmd_make(CMD_OBJECT_GROUP));
+				drawit_group_owned(&g_drawit, hndls, count);
 				status_line_set(status, 1, "Commit Group");
 			} else {
 				g_drawit.is_grouping = true;
@@ -1297,22 +1380,76 @@ static void mode_enter_normal(void)
 /* MODE: SELECT */
 static void mode_select_event(const sapp_event *e)
 {
-	switch(g_drawit.select_kind) {
-	case SELECT_NEAREST:
+	struct mouse *mouse = &g_drawit.gfx.mouse;
+	struct object_handle *hndls;
+
+	switch(g_drawit.select_state) {
+	case SELECT_STATE_SINGLE:
 		drawit_select_mouse(&g_drawit);
 		break;
-	case SELECT_BOX:
-		/* drawit_select_region(&g_drawit.selection_da, &g_drawit.canvas, ); */
+	case SELECT_STATE_BOX:
+		drawit_select_rect(&g_drawit);
 		break;
 	default: break;
 	}
+
+	switch (e->type) {
+	case SAPP_EVENTTYPE_MOUSE_DOWN:
+		g_drawit.select_state = SELECT_STATE_BOX;
+		g_drawit.select_anchor = mouse->world;
+		g_drawit.select_rect = rect_fit2(mouse->world, mouse->world);
+		g_drawit.is_selecting_rect = true;
+		break;
+	case SAPP_EVENTTYPE_MOUSE_MOVE:
+		if (!g_drawit.is_selecting_rect) break;
+		g_drawit.select_rect = rect_fit2(g_drawit.select_anchor, mouse->world);
+		break;
+	case SAPP_EVENTTYPE_MOUSE_UP:
+		if (!g_drawit.selection_da->count) {
+			g_drawit.select_state = SELECT_STATE_SINGLE;
+		}
+		g_drawit.is_selecting_rect = false;
+		break;
+	default: break;
+	}
+
+	if (g_drawit.is_selecting_rect) return;
 
 	switch (e->type) {
 	case SAPP_EVENTTYPE_KEY_DOWN:
 		if (e->key_repeat) break;
 
 		switch(e->key_code) {
+		case SAPP_KEYCODE_Z:
+			if (e->modifiers & SAPP_MODIFIER_CTRL) {
+				drawit_undo(&g_drawit);
+			}
+			break;
+		case SAPP_KEYCODE_R:
+			if (e->modifiers & SAPP_MODIFIER_CTRL) {
+				drawit_redo(&g_drawit);
+			}
+			break;
+		case SAPP_KEYCODE_W:
+			if (!g_drawit.selection_da->count) break;
+			mode_exit_set();
+			mode_enter_drag();
+			break;
+		case SAPP_KEYCODE_X:
+			if (!g_drawit.selection_da->count) break;
+			drawit_delete_selection(&g_drawit);
+			break;
+		case SAPP_KEYCODE_A:
+			if (e->modifiers & SAPP_MODIFIER_SHIFT) {
+				if (!g_drawit.selection_da->count) break;
+				drawit_delete_group(&g_drawit);
+			} else if (g_drawit.selection_da->count) {
+				hndls = da_object_handle_elemdup(g_drawit.selection_da);
+				drawit_group_owned(&g_drawit, hndls, g_drawit.selection_da->count);
+			}
+			break;
 		case SAPP_KEYCODE_ESCAPE:
+			g_drawit.select_state = SELECT_STATE_SINGLE;
 			mode_exit();
 			break;
 		default: break;
@@ -1652,20 +1789,24 @@ void draw_text_cursor_overlay(struct graphic_ctx *gfx, const struct text_obj *tx
 	nvgText(gfx->vg, transl.x, transl.y, c, c+1); /* I give up messing with GlobalCompositeOperations */
 }
 
-void draw_obj_bounds(struct graphic_ctx *gfx, const struct object_data *obj)
+void draw_bounds(struct graphic_ctx *gfx, rect bounds, const color c)
 {
-	rect global_bounds = rect_transl(obj->bounds, obj->transl);
-
 	nvgBeginPath(gfx->vg);
 	nvgRect(gfx->vg,
-		global_bounds.x0,
-		global_bounds.y0,
-		global_bounds.x1 - global_bounds.x0,
-		global_bounds.y1 - global_bounds.y0
+		bounds.x0,
+		bounds.y0,
+		bounds.x1 - bounds.x0,
+		bounds.y1 - bounds.y0
 	);
-	nvgStrokeColor(gfx->vg, nvgRGBA(0, 255, 0, 255));
+	nvgStrokeColor(gfx->vg, nvgRGBA(c.r, c.g, c.b, c.a));
 	nvgStrokeWidth(gfx->vg, 2.0f);
 	nvgStroke(gfx->vg);
+}
+
+void draw_obj_bounds(struct graphic_ctx *gfx, const struct object_data *obj, enum theme theme)
+{
+	rect global_bounds = rect_transl(obj->bounds, obj->transl);
+	draw_bounds(gfx, global_bounds, COLORS_OUTLINE[theme]);
 }
 
 void draw_text(struct graphic_ctx *gfx, const struct text_obj *txt, enum theme theme, bool draw_cursor)
@@ -1727,14 +1868,17 @@ void draw_text_store(struct graphic_ctx *gfx,
 	}
 }
 
-void draw_selected_bounds(struct graphic_ctx *gfx, const struct canvas *canvas, const struct da_object_handle *selects)
+void draw_selected_bounds(struct graphic_ctx *gfx,
+                          const struct canvas *canvas,
+                          const struct da_object_handle *selects,
+                          enum theme theme)
 {
 	struct object_data *obj;
 	size_t i;
 
 	for (i = 0; i < selects->count; i++) { 
 		obj = canvas_object_get(canvas, selects->elems[i]);
-		draw_obj_bounds(gfx, obj);
+		draw_obj_bounds(gfx, obj, theme);
 	}
 }
 
@@ -1946,7 +2090,9 @@ void frame(void)
 			draw_stroke_store(gfx, &canvas->stroke_store);
 			draw_text_store(gfx, &canvas->text_store, g_drawit.theme, g_drawit.active_text_id);
 			if (!g_drawit.hide_selection_outline)
-				draw_selected_bounds(gfx, canvas, g_drawit.selection_da);
+				draw_selected_bounds(gfx, canvas, g_drawit.selection_da, g_drawit.theme);
+			if (g_drawit.is_selecting_rect)
+				draw_bounds(gfx, g_drawit.select_rect, COLORS_SELECT[g_drawit.theme]);
 
 		nvgRestore(gfx->vg);
 

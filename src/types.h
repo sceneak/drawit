@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include "util.h"
 
 #define GAPBUF_INITIAL_ALLOC 512
 
@@ -81,6 +82,12 @@ static inline bool rect_contains(rect r, vec2 v)
 	    && r.y0 < v.y && v.y < r.y1;
 }
 
+static inline bool rect_overlaps(rect r0, rect r1)
+{
+	return r0.x0 < r1.x1 && r0.x1 > r1.x0 &&
+	       r0.y0 < r1.y1 && r0.y1 > r1.y0;
+}
+
 static inline rect rect_transl(rect r, vec2 d)
 {
 	return (rect){
@@ -88,6 +95,14 @@ static inline rect rect_transl(rect r, vec2 d)
 		.y0 = r.y0 + d.y,
 		.x1 = r.x1 + d.x,
 		.y1 = r.y1 + d.y
+	};
+}
+
+static inline rect rect_fit2(vec2 a, vec2 b)
+{
+	return (rect) {
+		.x0 = min(a.x, b.x), .y0 = min(a.y, b.y),
+		.x1 = max(a.x, b.x), .y1 = max(a.y, b.y),
 	};
 }
 

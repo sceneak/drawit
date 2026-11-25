@@ -1,15 +1,4 @@
 # Plan for Controls & Layout
-[] From NORMAL mode:
-	[] Keydown e enters SELECT mode
-		[] Mouse Left Down->Move->Up selects a box area
-		[] Keydown x deletes objects
-		[] Keydown w OR Mouse Mid Down enters drag mode
-		[] Keydown a Groups
-		[] Keydown A Ungroups
-	[] Keydown x or keydown w stays in normal mode but selects the object directly under the cursor
-		[] Keydown x deletes objects
-		[] Keydown w enters drag mode
-
 # Todo
 [] Box Select
 	[v] Impl group_id to object_data
