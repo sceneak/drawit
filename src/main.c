@@ -547,7 +547,10 @@ float stroke_store_dist(const struct stroke_store *store, int id, vec2 v)
 	return nearest_dist2;
 }
 
-struct object_handle stroke_store_hit_nearest(const struct stroke_store *store, vec2 v, float *dist2_out)
+struct object_handle stroke_store_hit_nearest(const struct stroke_store *store,
+                                              vec2 v,
+                                              float *dist2_out,
+                                              bool root_only)
 {
 	struct stroke_desc *desc;
 	rect global_bounds;
@@ -560,6 +563,7 @@ struct object_handle stroke_store_hit_nearest(const struct stroke_store *store, 
 	for (i = 0; i < store->desc_da->count; i++) {
 		desc = store->desc_da->elems + i;
 		if (desc->obj.deleted) continue;
+		if (desc->obj.group_id != -1 && root_only) continue;
 
 		global_bounds = rect_transl(desc->obj.bounds, desc->obj.transl);
 		if (!rect_contains(global_bounds, v))
@@ -706,7 +710,7 @@ static inline void text_store_append(struct text_store *store,
 	store->text_max_count = store->text_da->count;
 }
 
-struct object_handle text_store_hit(const struct text_store *store, vec2 v)
+struct object_handle text_store_hit(const struct text_store *store, vec2 v, bool root_only)
 {
 	struct text_obj *txt;
 	rect global_bounds;
@@ -715,6 +719,7 @@ struct object_handle text_store_hit(const struct text_store *store, vec2 v)
 	for (i = 0; i < store->text_da->count; i++) {
 		txt = store->text_da->elems + i;
 		if (txt->obj.deleted) continue;
+		if (txt->obj.group_id != -1 && root_only) continue;
 
 		global_bounds = rect_transl(txt->obj.bounds, txt->obj.transl);
 		if (!rect_contains(global_bounds, v)) continue;
@@ -778,7 +783,7 @@ void group_store_append_owned(struct group_store *store, struct object_handle *h
 	store->group_max_count = store->group_da->count;
 }
 
-struct object_handle group_store_hit(const struct group_store *store, vec2 v)
+struct object_handle group_store_hit(const struct group_store *store, vec2 v, bool root_only)
 {
 	struct group *grp;
 	rect global_bounds;
@@ -787,6 +792,7 @@ struct object_handle group_store_hit(const struct group_store *store, vec2 v)
 	for (i = 0; i < store->group_da->count; i++) {
 		grp = store->group_da->elems + i;
 		if (grp->obj.deleted) continue;
+		if (grp->obj.group_id != -1 && root_only) continue;
 
 		global_bounds = rect_transl(grp->obj.bounds, grp->obj.transl);
 		if (!rect_contains(global_bounds, v)) continue;
@@ -865,12 +871,12 @@ struct object_handle canvas_object_hit(struct canvas *canvas, vec2 v)
 {
 	struct object_handle hndl;
 
-	hndl = group_store_hit(&canvas->group_store, v);
+	hndl = group_store_hit(&canvas->group_store, v, true);
 	if (hndl.kind == OBJECT_KIND_NONE) {
-		hndl = text_store_hit(&canvas->text_store, v);
+		hndl = text_store_hit(&canvas->text_store, v, true);
 	}
 	if (hndl.kind == OBJECT_KIND_NONE) {
-		hndl = stroke_store_hit_nearest(&canvas->stroke_store, v, NULL);
+		hndl = stroke_store_hit_nearest(&canvas->stroke_store, v, NULL, true);
 	}
 	return hndl;
 }

@@ -1,12 +1,6 @@
 # Plan for Controls & Layout
 # Todo
-[] Box Select
-	[v] Impl group_id to object_data
-	[] Impl hit_region for text, stroke, groups
-		[] add bools for root only scan
-	[] Use hit_region for SELECT mode
-
-[] Enter edit mode with a filter for selection
+[] root level only for selections
 [] Copy Paste Objects
 [] Status Line Messages for delete, drag, undo/redo
 [] Edit text
