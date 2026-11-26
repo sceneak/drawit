@@ -68,7 +68,8 @@ else
 	DO_UNINSTALL = rm -f "$(INSTALL_BIN)" "$(DESKTOP_FILE)" "$(ICON_FILE)"
 endif
 
-SRCS = $(wildcard $(SRC_DIR)/*.c) \
+SRCS = $(SRC_DIR)/sokol.c \
+       $(SRC_DIR)/main.c \
        $(wildcard $(VENDOR_DIR)/glad/*.c) \
        $(wildcard $(VENDOR_DIR)/nanovg/*.c) \
        $(wildcard $(VENDOR_DIR)/sokol/*.c)

@@ -1,3 +1,6 @@
+#ifndef TYPES_H
+#define TYPES_H
+
 #include <stdint.h>
 #include "util.h"
 
@@ -206,4 +209,5 @@ static inline char gapbuf_at(const struct gapbuf *buf, size_t i)
 	return buf->data[gapbuf_to_actual(buf, i)];
 }
 
+#endif
 

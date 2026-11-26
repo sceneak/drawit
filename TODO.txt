@@ -1,9 +1,10 @@
 # Todo
-[] MID mouse to drag
-[] Canvas.h Separation
+[v] Canvas.h Separation
 [] Copy Paste Objects
 [] Edit text
-	[] Text cleanup
+[] Change text / stroke colors
+[] Change text / stroke / group size
+[] MID mouse to drag
 [] Canvas Serialization
 [] Readme & Alpha release update
 
