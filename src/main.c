@@ -194,7 +194,6 @@ struct graphic_ctx {
 	int screen_width, screen_height;
 
 	NVGcontext *vg;
-	const color *clear_colors;
 	int font_handle;
 
 	struct camera cam;
@@ -1996,7 +1995,6 @@ void init(void)
 	g_drawit.hist.canvas = &g_drawit.canvas;
 	da_object_handle_create(&g_drawit.selection_da, DA_INITIAL_CAPACITY);
 
-	gfx->clear_colors = COLORS_BACKGROUND;
 	pen->colors_primary = COLORS_YELLOW;
 	pen->colors_secondary = COLORS_RED;
 	pen->active_colors = &pen->colors_primary;
@@ -2111,10 +2109,10 @@ void frame(void)
 	gfx->screen_dpi_scale = sapp_dpi_scale();
 
 	glViewport(0, 0, gfx->screen_width, gfx->screen_height);
-	glClearColor(gfx->clear_colors[g_drawit.theme].r/255.0f,
-	             gfx->clear_colors[g_drawit.theme].g/255.0f,
-	             gfx->clear_colors[g_drawit.theme].b/255.0f,
-	             gfx->clear_colors[g_drawit.theme].a/255.0f);
+	glClearColor(COLORS_BACKGROUND[g_drawit.theme].r/255.0f,
+	             COLORS_BACKGROUND[g_drawit.theme].g/255.0f,
+	             COLORS_BACKGROUND[g_drawit.theme].b/255.0f,
+	             COLORS_BACKGROUND[g_drawit.theme].a/255.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
 	nvgBeginFrame(gfx->vg,
