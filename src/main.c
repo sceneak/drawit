@@ -407,27 +407,31 @@ int canvas_objects_created_after(const struct canvas *canvas,
 	int dstroke = stroke_desc_da->count - chk.stroke_count;
 	int dtext = text_da->count - chk.text_count;
 	int dgroup = group_da->count - chk.group_count;
+	long total = dstroke + dtext + dgroup;
 
 	int id;
 
 	if (!dstroke && !dtext && !dgroup) return -1;
 	if (dstroke < 0 || dtext < 0 || dgroup < 0) return -2;
 
-	*out_handles = (struct object_handle *)malloc((dstroke + dtext + dgroup) * sizeof(struct object_handle *));
+	*out_handles = (struct object_handle *)malloc(total * sizeof(struct object_handle *));
 	assert(*out_handles);
 
 	*out_count = 0;
 	for (id = (int)chk.stroke_count; (size_t)id < stroke_desc_da->count; id++) {
 		if (stroke_desc_da->elems[id].obj.deleted) continue;
-		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_STROKE, .id = id };
+		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_STROKE,
+		                                                         .id = id };
 	}
 	for (id = (int)chk.text_count; (size_t)id < text_da->count; id++) {
 		if (text_da->elems[id].obj.deleted) continue;
-		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_TEXT, .id = id };
+		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_TEXT,
+		                                                         .id = id };
 	}
 	for (id = (int)chk.group_count; (size_t)id < group_da->count; id++) {
 		if (group_da->elems[id].obj.deleted) continue;
-		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_GROUP, .id = id };
+		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_GROUP,
+		                                                         .id = id };
 	}
 	
 	return 0;
@@ -582,7 +586,10 @@ struct object_handle stroke_store_hit_nearest(const struct stroke_store *store,
 	return (struct object_handle) { .id = nearest_stroke_idx, .kind = OBJECT_KIND_STROKE };
 }
 
-void stroke_store_hit_rect(const struct stroke_store *store, struct da_object_handle **hndls, rect r, bool root_only)
+void stroke_store_hit_rect(const struct stroke_store *store,
+                           struct da_object_handle **hndls,
+                           rect r,
+                           bool root_only)
 {
 	struct stroke_desc *desc;
 	rect global_bounds;
@@ -692,7 +699,10 @@ void text_obj_backspace(struct text_obj *txt)
 	txt->bounds_dirty = 1;
 }
 
-void text_obj_cursor(struct text_obj *txt, int dir) { gapbuf_open(txt->buf, txt->buf->gap_start+dir); }
+void text_obj_cursor(struct text_obj *txt, int dir)
+{
+	gapbuf_open(txt->buf, txt->buf->gap_start+dir);
+}
 
 static inline void text_store_append(struct text_store *store,
                                      const color *colors,
@@ -729,7 +739,10 @@ struct object_handle text_store_hit(const struct text_store *store, vec2 v, bool
 	return HANDLE_DEFAULT;
 }
 
-void text_store_hit_rect(const struct text_store *store, struct da_object_handle **hndls_da, rect r, bool root_only)
+void text_store_hit_rect(const struct text_store *store,
+                         struct da_object_handle **hndls_da,
+                         rect r,
+                         bool root_only)
 {
 	struct text_obj *txt;
 	rect global_bounds;
@@ -765,7 +778,9 @@ int group_store_next_id(struct group_store *store)
 	return store->group_da->count;
 }
 
-void group_store_append_owned(struct group_store *store, struct object_handle *hndls, size_t count, rect bounds)
+void group_store_append_owned(struct group_store *store,
+                              struct object_handle *hndls,
+                              size_t count, rect bounds)
 {
 	struct group grp = {
 		.obj          = OBJ_DEFAULT,
@@ -802,7 +817,9 @@ struct object_handle group_store_hit(const struct group_store *store, vec2 v, bo
 	return HANDLE_DEFAULT;
 }
 
-void group_store_hit_rect(const struct group_store *store, struct da_object_handle **hndls_da, rect r, bool root_only)
+void group_store_hit_rect(const struct group_store *store,
+                          struct da_object_handle **hndls_da,
+                          rect r, bool root_only)
 {
 	struct group *grp;
 	rect global_bounds;
@@ -816,7 +833,8 @@ void group_store_hit_rect(const struct group_store *store, struct da_object_hand
 		global_bounds = rect_transl(grp->obj.bounds, grp->obj.transl);
 		if (!rect_overlaps(global_bounds, r)) continue;
 
-		da_object_handle_append(hndls_da, (struct object_handle) { .id = i, .kind = OBJECT_KIND_GROUP });
+		da_object_handle_append(hndls_da, (struct object_handle) { .id = i,
+		                                                           .kind = OBJECT_KIND_GROUP });
 	}
 }
 
@@ -1231,8 +1249,10 @@ static void mode_normal_event_camera(struct graphic_ctx *gfx, const sapp_event *
 	switch(e->type) {
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		if (cam->is_panning) {
-			cam->pos.x = cam->pan_pivot_self.x + (cam->pan_pivot_mouse.x - mouse->screen.x)/cam->zoom;
-			cam->pos.y = cam->pan_pivot_self.y + (cam->pan_pivot_mouse.y - mouse->screen.y)/cam->zoom;
+			cam->pos.x = cam->pan_pivot_self.x +
+			             (cam->pan_pivot_mouse.x - mouse->screen.x)/cam->zoom;
+			cam->pos.y = cam->pan_pivot_self.y +
+			             (cam->pan_pivot_mouse.y - mouse->screen.y)/cam->zoom;
 		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_UP:
@@ -1346,7 +1366,8 @@ static void mode_normal_event(const sapp_event *e)
 			if (g_drawit.is_grouping) {
 				g_drawit.is_grouping = false;
 
-				if (canvas_objects_created_after(canvas, *checkpt, &hndls, &count) != 0) {
+				if (canvas_objects_created_after(canvas, *checkpt,
+				                                 &hndls, &count) != 0) {
 					status_line_set(status, 1, "Invalid Grouping Checkpoint");
 					break;
 				}
@@ -1775,7 +1796,9 @@ static inline vec2 get_cursor_size(struct graphic_ctx *gfx, const struct text_ob
 	return (vec2) { advance, ascender - descender };
 }
 
-void draw_text_cursor_overlay(struct graphic_ctx *gfx, const struct text_obj *txt, enum theme theme, bool local)
+void draw_text_cursor_overlay(struct graphic_ctx *gfx,
+                              const struct text_obj *txt,
+                              enum theme theme, bool local)
 {
 	vec2 offset = get_cursor_offset(gfx, txt);
 	vec2 size = get_cursor_size(gfx, txt);
@@ -1983,7 +2006,10 @@ void init(void)
 	gladLoaderLoadGL();
 	gfx->vg = nvgCreateGL3(NVG_ANTIALIAS | NVG_STENCIL_STROKES);
 
-	gfx->font_handle = nvgCreateFontMem(gfx->vg, "Inconsolata-Regular-Sub", (u8 *)inconsolata_ttf, inconsolata_ttf_len, 0);
+	gfx->font_handle = nvgCreateFontMem(gfx->vg,
+	                                    "Inconsolata-Regular-Sub",
+	                                    (u8 *)inconsolata_ttf,
+	                                    inconsolata_ttf_len, 0);
 
 	mode_exit();
 
@@ -2021,7 +2047,8 @@ void event_pen(const sapp_event *e)
 		vel = ( sqrtf(vec2_dist2(pen->curr_pt.coord, pen->last_pt.coord)) / delta );
 
 		pen->curr_pt.pressure = 1 - min(vel / (VELOCITY_MAX_IN * gfx->screen_dpi_scale), 1);
-		pen->curr_pt.pressure = pen->last_pt.pressure * .75 + pen->curr_pt.pressure * .25; /* blend */
+		pen->curr_pt.pressure = pen->last_pt.pressure * .75 + pen->curr_pt.pressure * .25;
+		/* ^ blend */
 
 		pen->last_pt = pen->curr_pt;
 		break;
@@ -2084,10 +2111,15 @@ void frame(void)
 	gfx->screen_dpi_scale = sapp_dpi_scale();
 
 	glViewport(0, 0, gfx->screen_width, gfx->screen_height);
-	glClearColor(gfx->clear_colors[g_drawit.theme].r/255.0f, gfx->clear_colors[g_drawit.theme].g/255.0f, gfx->clear_colors[g_drawit.theme].b/255.0f, gfx->clear_colors[g_drawit.theme].a/255.0f);
+	glClearColor(gfx->clear_colors[g_drawit.theme].r/255.0f,
+	             gfx->clear_colors[g_drawit.theme].g/255.0f,
+	             gfx->clear_colors[g_drawit.theme].b/255.0f,
+	             gfx->clear_colors[g_drawit.theme].a/255.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
-	nvgBeginFrame(gfx->vg, gfx->screen_width/gfx->screen_dpi_scale, gfx->screen_height/gfx->screen_dpi_scale, gfx->screen_dpi_scale);
+	nvgBeginFrame(gfx->vg,
+	              gfx->screen_width/gfx->screen_dpi_scale, gfx->screen_height/gfx->screen_dpi_scale,
+	              gfx->screen_dpi_scale);
 		nvgSave(gfx->vg);
 			nvgTranslate(gfx->vg, gfx->screen_width/2, gfx->screen_height/2);
 			nvgScale(gfx->vg, cam->zoom, cam->zoom);
@@ -2104,7 +2136,10 @@ void frame(void)
 
 		if (!gfx->mouse.hide && !gfx->mouse.is_outside_frame) {
 			nvgBeginPath(gfx->vg);
-				nvgCircle(gfx->vg, roundf(mouse->screen.x), round(mouse->screen.y), cam->zoom*STROKE_OPTS.size/1.5);
+				nvgCircle(gfx->vg,
+				          roundf(mouse->screen.x),
+				          round(mouse->screen.y),
+				          cam->zoom*STROKE_OPTS.size/1.5);
 			c = (*pen->active_colors)[g_drawit.theme];
 			c.a /= 1.5;
 			nvgFillColor(gfx->vg, color_to_NVGcolor(c));
