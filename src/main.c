@@ -240,7 +240,7 @@ static void drawit_select_rect(struct drawit_ctx *drawit)
 	struct canvas *canvas = &drawit->canvas;
 
 	(*selection)->count = 0;
-	canvas_object_hit_rect(canvas, selection, g_drawit.select_rect);
+	canvas_object_hit_rect(canvas, selection, drawit->select_rect);
 }
 
 static void drawit_delete_selection(struct drawit_ctx *drawit)
@@ -989,7 +989,7 @@ void draw_rect(struct graphic_ctx *gfx, rect r)
 	nvgStroke(gfx->vg);
 }
 
-void draw_stroke_store(struct graphic_ctx *gfx, struct stroke_store *store)
+void draw_stroke_store(struct graphic_ctx *gfx, struct stroke_store *store, enum theme theme)
 {
 	size_t i, j;
 	struct stroke_desc *s;
@@ -1008,7 +1008,7 @@ void draw_stroke_store(struct graphic_ctx *gfx, struct stroke_store *store)
 		nvgSave(gfx->vg);
 		nvgTranslate(gfx->vg, s->obj.transl.x, s->obj.transl.y);
 			nvgBeginPath(gfx->vg);
-			nvgFillColor(gfx->vg, color_to_NVGcolor(s->colors[g_drawit.theme]));
+			nvgFillColor(gfx->vg, color_to_NVGcolor(s->colors[theme]));
 
 			p0 = s_vertices[s->vertex_count-1];
 			p1 = s_vertices[0];
@@ -1035,7 +1035,7 @@ void draw_selection(struct da_object_handle *objs)
 }
 */
 
-void draw_status_line(struct graphic_ctx *gfx, const struct status_line *status)
+void draw_status_line(struct graphic_ctx *gfx, const struct status_line *status, enum theme theme)
 {
 	const float FONT_SIZE = 26.0;
 	const vec2 coord = { 0 + FONT_SIZE, gfx->screen_height - FONT_SIZE };
@@ -1045,7 +1045,7 @@ void draw_status_line(struct graphic_ctx *gfx, const struct status_line *status)
 
 	nvgFontSize(gfx->vg, FONT_SIZE);
 	nvgFontFaceId(gfx->vg, gfx->font_handle);
-	nvgFillColor(gfx->vg, color_to_NVGcolor(COLORS_CONTRAST[g_drawit.theme]));
+	nvgFillColor(gfx->vg, color_to_NVGcolor(COLORS_CONTRAST[theme]));
 	nvgTextAlign(gfx->vg, NVG_ALIGN_LEFT | NVG_ALIGN_MIDDLE);
 	nvgText(gfx->vg, coord.x, coord.y, status->buf, status->buf + status->len);
 }
@@ -1193,7 +1193,7 @@ void frame(void)
 			nvgScale(gfx->vg, cam->zoom, cam->zoom);
 			nvgTranslate(gfx->vg, -cam->pos.x, -cam->pos.y);
 
-			draw_stroke_store(gfx, &canvas->stroke_store);
+			draw_stroke_store(gfx, &canvas->stroke_store, g_drawit.theme);
 			draw_text_store(gfx, &canvas->text_store, g_drawit.theme, g_drawit.active_text_id);
 			if (!g_drawit.hide_selection_outline)
 				draw_selected_bounds(gfx, canvas, g_drawit.selection_da, g_drawit.theme);
@@ -1213,7 +1213,7 @@ void frame(void)
 			nvgFillColor(gfx->vg, color_to_NVGcolor(c));
 			nvgFill(gfx->vg);
 		}
-		draw_status_line(gfx, &g_drawit.status_line);
+		draw_status_line(gfx, &g_drawit.status_line, g_drawit.theme);
 	nvgEndFrame(gfx->vg);
 }
 

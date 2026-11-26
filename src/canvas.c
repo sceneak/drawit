@@ -214,7 +214,7 @@ static int canvas_objects_created_after(const struct canvas *canvas,
 	if (!dstroke && !dtext && !dgroup) return -1;
 	if (dstroke < 0 || dtext < 0 || dgroup < 0) return -2;
 
-	*out_handles = (struct object_handle *)malloc(total * sizeof(struct object_handle *));
+	*out_handles = (struct object_handle *)malloc(total * sizeof(struct object_handle));
 	assert(*out_handles);
 
 	*out_count = 0;
@@ -702,7 +702,7 @@ static int canvas_object_group_owned(struct canvas *canvas,
 	return 0;
 }
 
-static void canvas_group__update_members_group(struct canvas *canvas, int group_id, bool deleted)
+static void canvas_group__update_members_group(struct canvas *canvas, int group_id, bool unset)
 {
 	struct da_group *group_da = canvas->group_store.group_da;
 	struct object_data *obj;
@@ -713,7 +713,7 @@ static void canvas_group__update_members_group(struct canvas *canvas, int group_
 
 	for (i = 0; i < grp->member_count; i++) {
 		obj = canvas_object_get(canvas, grp->members[i]);
-		obj->group_id = deleted ? -1 : group_id;
+		obj->group_id = unset ? -1 : group_id;
 	}
 }
 
@@ -721,7 +721,7 @@ static void canvas_group_delete_last(struct canvas *canvas)
 {
 	struct da_group *group_da = canvas->group_store.group_da;
 	group_da->count--;
-	canvas_group__update_members_group(canvas, group_da->count, -1);
+	canvas_group__update_members_group(canvas, group_da->count, true);
 }
 
 static void canvas_group_restore_last(struct canvas *canvas)
@@ -730,14 +730,14 @@ static void canvas_group_restore_last(struct canvas *canvas)
 	assert(group_da->count < canvas->group_store.group_max_count);
 	group_da->count++;
 
-	canvas_group__update_members_group(canvas, group_da->count-1, group_da->count-1);
+	canvas_group__update_members_group(canvas, group_da->count-1, false);
 }
 
 static void canvas_group_set_deleted(struct canvas *canvas, int id, bool deleted)
 {
 	struct da_group *group_da = canvas->group_store.group_da;
 	group_da->elems[id].obj.deleted = deleted;
-	canvas_group__update_members_group(canvas, id, -1);
+	canvas_group__update_members_group(canvas, id, true);
 }
 
 /* ==============================
