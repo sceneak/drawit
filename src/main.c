@@ -1588,7 +1588,7 @@ static void mode_enter_draw(void)
 	struct stroke_store *store = &g_drawit.canvas.stroke_store;
 	struct canvas_hist *hist = &g_drawit.hist;
 	struct pen *pen = &g_drawit.pen;
-	const color *colors = pen->active_colors[g_drawit.theme];
+	const color *colors = *pen->active_colors;
 
 	if (status->len) status->len = 0;
 

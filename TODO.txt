@@ -1,12 +1,17 @@
-# Plan for Controls & Layout
 # Todo
-[] root level only for selections
+[] MID mouse to drag
+[] allow undo/redo repeats
+[] fix colors in light mode
+[] Canvas.h Separation
 [] Copy Paste Objects
-[] Status Line Messages for delete, drag, undo/redo
 [] Edit text
 	[] Text cleanup
-[] Canvas.h Separation
-[] Canvas Serialization: SVG or Binary?
-[] Paste image
-[] Preset Objects
+[] Canvas Serialization
+[] Readme & Alpha release update
+
+# Future
+[] Profile
+[] Image objects
+[] Object Presets
 [] Animate
+[] Status Line Messages for delete, drag, undo/redo
