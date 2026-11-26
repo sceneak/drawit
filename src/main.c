@@ -1320,8 +1320,6 @@ static void mode_normal_event(const sapp_event *e)
 		break;
 	/* Keyboard */
 	case SAPP_EVENTTYPE_KEY_DOWN:
-		if (e->key_repeat) break;
-
 		pen->active_colors = &pen->colors_primary;
 		if (e->modifiers & SAPP_MODIFIER_ALT)
 			pen->active_colors = &pen->colors_secondary;
@@ -1350,6 +1348,8 @@ static void mode_normal_event(const sapp_event *e)
 			}
 			break;
 		case SAPP_KEYCODE_W:
+			if (e->key_repeat) break;
+
 			if (drawit_select_mouse(&g_drawit) != 0) break;
 			mode_exit_set();
 			mode_enter_drag();
@@ -1358,10 +1358,14 @@ static void mode_normal_event(const sapp_event *e)
 			mode_enter_select();
 			break;
 		case SAPP_KEYCODE_X:
+			if (e->key_repeat) break;
+
 			if (drawit_select_mouse(&g_drawit) != 0) break;
 			drawit_delete_selection(&g_drawit);
 			break;
 		case SAPP_KEYCODE_A:
+			if (e->key_repeat) break;
+
 			if (g_drawit.is_grouping) {
 				g_drawit.is_grouping = false;
 
@@ -1443,8 +1447,6 @@ static void mode_select_event(const sapp_event *e)
 
 	switch (e->type) {
 	case SAPP_EVENTTYPE_KEY_DOWN:
-		if (e->key_repeat) break;
-
 		switch(e->key_code) {
 		case SAPP_KEYCODE_Z:
 			if (e->modifiers & SAPP_MODIFIER_CTRL) {
@@ -1457,15 +1459,21 @@ static void mode_select_event(const sapp_event *e)
 			}
 			break;
 		case SAPP_KEYCODE_W:
+			if (e->key_repeat) break;
+
 			if (!g_drawit.selection_da->count) break;
 			mode_exit_set();
 			mode_enter_drag();
 			break;
 		case SAPP_KEYCODE_X:
+			if (e->key_repeat) break;
+
 			if (!g_drawit.selection_da->count) break;
 			drawit_delete_selection(&g_drawit);
 			break;
 		case SAPP_KEYCODE_A:
+			if (e->key_repeat) break;
+
 			if (e->modifiers & SAPP_MODIFIER_SHIFT) {
 				if (!g_drawit.selection_da->count) break;
 				drawit_delete_group(&g_drawit);

@@ -1,7 +1,5 @@
 # Todo
 [] MID mouse to drag
-[] allow undo/redo repeats
-[] fix colors in light mode
 [] Canvas.h Separation
 [] Copy Paste Objects
 [] Edit text
