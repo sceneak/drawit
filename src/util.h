@@ -7,8 +7,12 @@
 
 #if defined(__x86_64__) || defined(_M_X64)
 	#define ARCH_STR "x64"
+#elif defined(__aarch64__) || defined(_M_ARM64)
+	#define ARCH_STR "arm64"
 #elif defined(__i386__) || defined(_M_IX86)
 	#define ARCH_STR "x86"
+#elif defined(__arm__) || defined(_M_ARM)
+	#define ARCH_STR "arm"
 #else
 	#define ARCH_STR "unknown"
 #endif
