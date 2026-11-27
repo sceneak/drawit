@@ -1,4 +1,5 @@
 #include <perfect-freehand/pfh.h>
+#include <assert.h>
 #include "types.h"
 
 #define CANVAS_HIST_MAX 256
@@ -9,6 +10,8 @@ struct object_data {
 	vec2   transl;
 	rect   bounds;
 	bool   deleted;
+/* deleted elements are skipped during 'detection' (e.g. _hit
+ * or _get_group) but may still be copied over */
 };
 
 enum object_kind {
@@ -107,6 +110,7 @@ struct canvas_checkpoint {
 
 enum canvas_cmd_kind {
 	CANVAS_CMD_NONE,
+	CANVAS_CMD_COPY_DST,
 	CANVAS_CMD_OBJECT_DELETE,
 	CANVAS_CMD_OBJECT_DRAG,
 	CANVAS_CMD_OBJECT_GROUP,
@@ -119,6 +123,10 @@ enum canvas_cmd_kind {
 struct canvas_cmd {
 	enum canvas_cmd_kind kind;
 	union ctx {
+		struct { 
+			struct canvas_checkpoint chkpt_before,
+			                         chkpt_after;
+		} copy_dst;
 		struct object_handle obj;
 		struct {
 			struct object_handle *hndls;
@@ -185,7 +193,6 @@ static struct canvas canvas_create_empty()
 	return (struct canvas) { stroke_store, text_store, group_store };
 }
 
-/* purely for the pending groups feature */
 static struct canvas_checkpoint canvas_checkpoint_make(const struct canvas *canvas)
 {
 	struct canvas_checkpoint chk;
@@ -195,46 +202,9 @@ static struct canvas_checkpoint canvas_checkpoint_make(const struct canvas *canv
 	return chk;
 }
 
-static int canvas_objects_created_after(const struct canvas *canvas,
-                                        struct canvas_checkpoint chk,
-                                        struct object_handle **out_handles,
-                                        size_t *out_count)
+static struct canvas_checkpoint canvas_checkpoint_make_blank()
 {
-	const struct da_stroke_desc *stroke_desc_da = canvas->stroke_store.desc_da;
-	const struct da_text_obj *text_da = canvas->text_store.text_da;
-	const struct da_group *group_da = canvas->group_store.group_da;
-
-	int dstroke = stroke_desc_da->count - chk.stroke_count;
-	int dtext = text_da->count - chk.text_count;
-	int dgroup = group_da->count - chk.group_count;
-	long total = dstroke + dtext + dgroup;
-
-	int id;
-
-	if (!dstroke && !dtext && !dgroup) return -1;
-	if (dstroke < 0 || dtext < 0 || dgroup < 0) return -2;
-
-	*out_handles = (struct object_handle *)malloc(total * sizeof(struct object_handle));
-	assert(*out_handles);
-
-	*out_count = 0;
-	for (id = (int)chk.stroke_count; (size_t)id < stroke_desc_da->count; id++) {
-		if (stroke_desc_da->elems[id].obj.deleted) continue;
-		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_STROKE,
-		                                                         .id = id };
-	}
-	for (id = (int)chk.text_count; (size_t)id < text_da->count; id++) {
-		if (text_da->elems[id].obj.deleted) continue;
-		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_TEXT,
-		                                                         .id = id };
-	}
-	for (id = (int)chk.group_count; (size_t)id < group_da->count; id++) {
-		if (group_da->elems[id].obj.deleted) continue;
-		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_GROUP,
-		                                                         .id = id };
-	}
-	
-	return 0;
+	return (struct canvas_checkpoint) {0};
 }
 
 /* CANVAS: STROKES */
@@ -294,22 +264,58 @@ static void stroke_store_append_points(struct stroke_store *store,
 	stroke_store_render_last(store);
 }
 */
-static void stroke_store_delete_last(struct stroke_store *store)
+
+static struct object_handle stroke_store_copy_elem(struct stroke_store *dst,
+                                                   const struct stroke_store *src, int id)
 {
-	struct stroke_desc *s = DA_LAST(store->desc_da);
+		const struct stroke_desc *s = src->desc_da->elems + id;
+		struct stroke_desc copy = *s;
+
+		copy.obj.group_id = -1;
+		copy.input_idx    = dst->input_da->count;
+		copy.vertex_idx   = dst->pfh_vertex_buf.count;
+
+		da_pen_pt_append_n(&dst->input_da,
+		                   src->input_da->elems + s->input_idx,
+		                   s->input_count);
+		pfh_vec2_buf_push_n(&dst->pfh_vertex_buf,
+		                    src->pfh_vertex_buf.elems + s->vertex_idx,
+		                    s->vertex_count);
+		da_stroke_desc_append(&dst->desc_da, copy);
+		dst->desc_max_count = dst->desc_da->count;
+		return (struct object_handle){ .kind = OBJECT_KIND_STROKE,
+		                               .id   = dst->desc_da->count-1 };
+}
+
+static void stroke_store_get_group(const struct stroke_store *store, int group_id, struct da_object_handle **hndl_da)
+{
+	size_t i;
+	for (i = 0; i < store->desc_da->count; i++) {
+		if (store->desc_da->elems[i].obj.deleted) continue;
+		if (store->desc_da->elems[i].obj.group_id != group_id) continue;
+
+		da_object_handle_append(hndl_da, (struct object_handle) { .id   = i,
+		                                                  .kind = OBJECT_KIND_STROKE } );
+	}
+}
+
+static void stroke_store_delete_by(struct stroke_store *store, int amount)
+{
+	struct stroke_desc *s = store->desc_da->elems + store->desc_da->count - amount;
+	assert((size_t)amount <= store->desc_da->count);
 
 	store->input_da->count = s->input_idx;
 	store->pfh_vertex_buf.count = s->vertex_idx;
-	store->desc_da->count--;
+	store->desc_da->count -= amount;
 }
 
-static void stroke_store_restore_last(struct stroke_store *store)
+static void stroke_store_restore_by(struct stroke_store *store, int amount)
 {
 	struct stroke_desc *s;
 
-	assert(store->desc_max_count > store->desc_da->count);
+	assert(store->desc_da->count + amount <= store->desc_max_count);
 
-	store->desc_da->count++;
+	store->desc_da->count += amount;
 	s = DA_LAST(store->desc_da);
 
 	store->input_da->count = s->input_idx + s->input_count;
@@ -470,17 +476,54 @@ static void text_obj_cursor(struct text_obj *txt, int dir)
 	gapbuf_open(txt->buf, txt->buf->gap_start+dir);
 }
 
-static inline void text_store_append(struct text_store *store, const color *colors,
-                                     int font_handle, float font_size, vec2 pos)
+static void text_store__cleanup_last_deleted(struct text_store *store)
 {
 	size_t i;
 
 	for (i = store->text_da->count; i < store->text_max_count; i++) {
 		gapbuf_destroy(&store->text_da->elems[i].buf);
 	}
+}
+
+static void text_store_append(struct text_store *store, const color *colors,
+                                     int font_handle, float font_size, vec2 pos)
+{
+	text_store__cleanup_last_deleted(store);
 
 	da_text_obj_append(&store->text_da, text_obj_create(colors, font_handle, font_size, pos));
 	store->text_max_count = store->text_da->count;
+}
+
+static struct object_handle text_store_copy_elem(struct text_store *dst,
+                                                 const struct text_store *src, int id)
+{
+	const struct text_obj *txt = src->text_da->elems + id;
+	struct text_obj copy;
+
+	if (txt->bounds_dirty) puts("something ain't right");
+	copy = *txt;
+
+	copy.obj.group_id = -1;
+	copy.buf = gapbuf_copy(txt->buf);
+
+	text_store__cleanup_last_deleted(dst);
+
+	da_text_obj_append(&dst->text_da, copy);
+	dst->text_max_count = dst->text_da->count;
+	return (struct object_handle){ .kind = OBJECT_KIND_TEXT,
+	                               .id   = dst->text_da->count-1 };
+}
+
+static void text_store_get_group(const struct text_store *store, int group_id, struct da_object_handle **hndl_da)
+{
+	size_t i;
+	for (i = 0; i < store->text_da->count; i++) {
+		if (store->text_da->elems[i].obj.deleted) continue;
+		if (store->text_da->elems[i].obj.group_id != group_id) continue;
+
+		da_object_handle_append(hndl_da, (struct object_handle) { .id   = i,
+		                                                  .kind = OBJECT_KIND_TEXT } );
+	}
 }
 
 static struct object_handle text_store_hit(const struct text_store *store,
@@ -504,7 +547,7 @@ static struct object_handle text_store_hit(const struct text_store *store,
 }
 
 static void text_store_hit_rect(const struct text_store *store,
-                                struct da_object_handle **hndls_da,
+                                struct da_object_handle **hndl_da,
                                 rect r, bool root_only)
 {
 	struct text_obj *txt;
@@ -519,20 +562,21 @@ static void text_store_hit_rect(const struct text_store *store,
 		global_bounds = rect_transl(txt->obj.bounds, txt->obj.transl);
 		if (!rect_overlaps(global_bounds, r)) continue;
 
-		da_object_handle_append(hndls_da, (struct object_handle){ .id = i,
+		da_object_handle_append(hndl_da, (struct object_handle){ .id = i,
 		                                                          .kind = OBJECT_KIND_TEXT });
 	}
 }
 
-static void text_store_delete_last(const struct text_store *store)
+static void text_store_delete_by(const struct text_store *store, int amount)
 {
-	store->text_da->count--;
+	assert((size_t)amount <= store->text_da->count);
+	store->text_da->count -= amount;
 }
 
-static void text_store_restore_last(const struct text_store *store)
+static void text_store_restore_by(const struct text_store *store, int amount)
 {
-	assert(store->text_da->count < store->text_max_count);
-	store->text_da->count++;
+	assert(store->text_da->count + amount <= store->text_max_count);
+	store->text_da->count += amount;
 }
 
 /* CANVAS: GROUPS */
@@ -561,6 +605,18 @@ static void group_store_append_owned(struct group_store *store,
 	store->group_max_count = store->group_da->count;
 }
 
+static void group_store_get_group(const struct group_store *store, int group_id, struct da_object_handle **hndl_da)
+{
+	size_t i;
+	for (i = 0; i < store->group_da->count; i++) {
+		if (store->group_da->elems[i].obj.deleted) continue;
+		if (store->group_da->elems[i].obj.group_id != group_id) continue;
+
+		da_object_handle_append(hndl_da, (struct object_handle) { .id   = i,
+		                                                  .kind = OBJECT_KIND_GROUP } );
+	}
+}
+
 static struct object_handle group_store_hit(const struct group_store *store,
                                             vec2 v, bool root_only)
 {
@@ -582,7 +638,7 @@ static struct object_handle group_store_hit(const struct group_store *store,
 }
 
 static void group_store_hit_rect(const struct group_store *store,
-                                 struct da_object_handle **hndls_da,
+                                 struct da_object_handle **hndl_da,
                                  rect r, bool root_only)
 {
 	struct group *grp;
@@ -597,7 +653,7 @@ static void group_store_hit_rect(const struct group_store *store,
 		global_bounds = rect_transl(grp->obj.bounds, grp->obj.transl);
 		if (!rect_overlaps(global_bounds, r)) continue;
 
-		da_object_handle_append(hndls_da, (struct object_handle) { .id = i,
+		da_object_handle_append(hndl_da, (struct object_handle) { .id = i,
 		                                                           .kind = OBJECT_KIND_GROUP });
 	}
 }
@@ -616,6 +672,47 @@ static struct object_data *canvas_object_get(const struct canvas *canvas,
 	case OBJECT_KIND_GROUP: return &canvas->group_store.group_da->elems[hndl.id].obj;
 	default: return NULL;
 	}
+}
+
+/* TODO: delegate to specific stores + use da_object_handles */
+static int canvas_objects_created_after(const struct canvas *canvas, struct canvas_checkpoint chk,
+                                        struct object_handle **out_handles, size_t *out_count)
+{
+	const struct da_stroke_desc *stroke_desc_da = canvas->stroke_store.desc_da;
+	const struct da_text_obj *text_da = canvas->text_store.text_da;
+	const struct da_group *group_da = canvas->group_store.group_da;
+
+	int dstroke = stroke_desc_da->count - chk.stroke_count;
+	int dtext = text_da->count - chk.text_count;
+	int dgroup = group_da->count - chk.group_count;
+	long total = dstroke + dtext + dgroup;
+
+	int id;
+
+	if (!dstroke && !dtext && !dgroup) return -1;
+	if (dstroke < 0 || dtext < 0 || dgroup < 0) return -2;
+
+	*out_handles = (struct object_handle *)malloc(total * sizeof(struct object_handle));
+	assert(*out_handles);
+
+	*out_count = 0;
+	for (id = (int)chk.stroke_count; (size_t)id < stroke_desc_da->count; id++) {
+		if (stroke_desc_da->elems[id].obj.deleted) continue;
+		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_STROKE,
+		                                                         .id = id };
+	}
+	for (id = (int)chk.text_count; (size_t)id < text_da->count; id++) {
+		if (text_da->elems[id].obj.deleted) continue;
+		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_TEXT,
+		                                                         .id = id };
+	}
+	for (id = (int)chk.group_count; (size_t)id < group_da->count; id++) {
+		if (group_da->elems[id].obj.deleted) continue;
+		(*out_handles)[(*out_count)++] = (struct object_handle){ .kind = OBJECT_KIND_GROUP,
+		                                                         .id = id };
+	}
+	
+	return 0;
 }
 
 static void canvas_object_set_deleted(struct canvas *canvas,
@@ -651,6 +748,15 @@ static void canvas_object_transl(struct canvas *canvas, struct object_handle hnd
 	}
 }
 
+static void canvas_objects_transl(struct canvas *canvas,
+                                   struct object_handle *hndls, size_t count, vec2 d)
+{
+	size_t i;
+	for (i = 0; i < count; i++) {
+		canvas_object_transl(canvas, hndls[i], d);
+	}
+}
+
 static struct object_handle canvas_object_hit(struct canvas *canvas, vec2 v)
 {
 	struct object_handle hndl;
@@ -666,62 +772,75 @@ static struct object_handle canvas_object_hit(struct canvas *canvas, vec2 v)
 }
 
 static void canvas_object_hit_rect(struct canvas *canvas,
-                                   struct da_object_handle **hndls_da, rect r)
+                                   struct da_object_handle **hndl_da, rect r)
 {
-	group_store_hit_rect(&canvas->group_store, hndls_da, r, true);
-	text_store_hit_rect(&canvas->text_store, hndls_da, r, true);
-	stroke_store_hit_rect(&canvas->stroke_store, hndls_da, r, true);
+	group_store_hit_rect(&canvas->group_store, hndl_da, r, true);
+	text_store_hit_rect(&canvas->text_store, hndl_da, r, true);
+	stroke_store_hit_rect(&canvas->stroke_store, hndl_da, r, true);
 }
 
 /* CANVAS OBJ GROUPING */
-static int canvas_object_group_owned(struct canvas *canvas,
-                                     struct object_handle *hndls, size_t count)
+static rect canvas_objects_global_bounds(struct canvas *canvas,
+                                         struct object_handle *hndls, size_t count)
 {
 	struct object_data *obj;
 	rect global_bounds;
 	size_t i;
-	int future_id;
-
-	if (count < 2) return -1;
-
-	future_id = group_store_next_id(&canvas->group_store);
 
 	obj = canvas_object_get(canvas, hndls[0]);
-	obj->group_id = future_id;
 	global_bounds = rect_transl(obj->bounds, obj->transl);
 
 	for (i = 1; i < count; i++) {
 		obj = canvas_object_get(canvas, hndls[i]);
-
-		obj->group_id = future_id;
-		rect obj_global = rect_transl(obj->bounds, obj->transl);
-		global_bounds = rect_fit_rect(global_bounds, obj_global);
+		global_bounds = rect_fit_rect(global_bounds,
+		                              rect_transl(obj->bounds, obj->transl));
 	}
-
-	group_store_append_owned(&canvas->group_store, hndls, count, global_bounds);
-	return 0;
+	return global_bounds;
 }
 
-static void canvas_group__update_members_group(struct canvas *canvas, int group_id, bool unset)
+static void canvas_group__set_members_group(struct canvas *canvas, int group_id)
 {
-	struct da_group *group_da = canvas->group_store.group_da;
-	struct object_data *obj;
 	struct group *grp;
 	size_t i;
 
-	grp = group_da->elems + group_id;
-
+	grp = canvas->group_store.group_da->elems + group_id;
 	for (i = 0; i < grp->member_count; i++) {
-		obj = canvas_object_get(canvas, grp->members[i]);
-		obj->group_id = unset ? -1 : group_id;
+		canvas_object_get(canvas, grp->members[i])->group_id = group_id;
 	}
+}
+
+static void canvas_group__unset_members_group(struct canvas *canvas, int group_id)
+{
+	struct group *grp;
+	size_t i;
+
+	grp = canvas->group_store.group_da->elems + group_id;
+	for (i = 0; i < grp->member_count; i++) {
+		canvas_object_get(canvas, grp->members[i])->group_id = -1;
+	}
+}
+
+static int canvas_object_group_owned(struct canvas *canvas,
+                                     struct object_handle *hndls, size_t count)
+{
+	rect bounds;
+	int id;
+
+	if (count < 2) return -1;
+
+	bounds = canvas_objects_global_bounds(canvas, hndls, count);
+	id = group_store_next_id(&canvas->group_store);
+
+	group_store_append_owned(&canvas->group_store, hndls, count, bounds);
+	canvas_group__set_members_group(canvas, id);
+	return id;
 }
 
 static void canvas_group_delete_last(struct canvas *canvas)
 {
 	struct da_group *group_da = canvas->group_store.group_da;
 	group_da->count--;
-	canvas_group__update_members_group(canvas, group_da->count, true);
+	canvas_group__unset_members_group(canvas, group_da->count);
 }
 
 static void canvas_group_restore_last(struct canvas *canvas)
@@ -730,14 +849,131 @@ static void canvas_group_restore_last(struct canvas *canvas)
 	assert(group_da->count < canvas->group_store.group_max_count);
 	group_da->count++;
 
-	canvas_group__update_members_group(canvas, group_da->count-1, false);
+	canvas_group__set_members_group(canvas, group_da->count-1);
 }
 
 static void canvas_group_set_deleted(struct canvas *canvas, int id, bool deleted)
 {
 	struct da_group *group_da = canvas->group_store.group_da;
 	group_da->elems[id].obj.deleted = deleted;
-	canvas_group__update_members_group(canvas, id, true);
+	canvas_group__unset_members_group(canvas, id);
+}
+
+/* CANVAS COPY */
+static struct object_handle canvas_object_copy(struct canvas *dst, const struct canvas *src,
+                                               struct object_handle hndl)
+{
+	const struct group *grp;
+	struct object_handle *new_members;
+	int id;
+	size_t i;
+	
+	switch (hndl.kind) {
+	case OBJECT_KIND_STROKE:
+		return stroke_store_copy_elem(&dst->stroke_store, &src->stroke_store, hndl.id);
+	case OBJECT_KIND_TEXT:
+		return text_store_copy_elem(&dst->text_store, &src->text_store, hndl.id);
+	case OBJECT_KIND_GROUP:
+		grp = src->group_store.group_da->elems + hndl.id;
+		new_members = malloc(grp->member_count * sizeof(*new_members));
+
+		for (i = 0; i < grp->member_count; i++) {
+			new_members[i] = canvas_object_copy(dst, src, grp->members[i]);
+		}
+
+		/* groups aren't copied, but recreated */
+		id = canvas_object_group_owned(dst, new_members, grp->member_count);
+		if (id >= 0) {
+			return (struct object_handle){ .kind = OBJECT_KIND_GROUP, .id = id };
+		}
+		puts("something ain't right with this group");
+		free(new_members);
+		/* fall through */
+	default: return HANDLE_DEFAULT;
+	}
+}
+
+static void canvas_objects_copy(struct canvas *dst, const struct canvas *src,
+                               struct object_handle *hndls, size_t count,
+                               struct da_object_handle **hndl_da)
+{
+	struct object_handle hndl;
+	size_t i;
+
+	for (i = 0; i < count; i++) {
+		hndl = canvas_object_copy(dst, src, hndls[i]);
+		if (hndl_da) da_object_handle_append(hndl_da, hndl);
+	}
+}
+
+static void canvas_object_copy_all(struct canvas *dst, const struct canvas *src, struct da_object_handle **dst_hndl_da)
+{
+	struct da_object_handle *src_hndl_da;
+	size_t est_roots;
+
+	est_roots = src->stroke_store.desc_da->count/2 + 1
+	          + src->text_store.text_da->count/2 + 1
+	          + src->group_store.group_da->count/2 + 1;
+	da_object_handle_create(&src_hndl_da, est_roots);
+
+	stroke_store_get_group(&src->stroke_store, -1, &src_hndl_da);
+	text_store_get_group(&src->text_store, -1, &src_hndl_da);
+	group_store_get_group(&src->group_store, -1, &src_hndl_da);
+
+	canvas_objects_copy(dst, src, src_hndl_da->elems, src_hndl_da->count, dst_hndl_da);
+
+	da_object_handle_destroy(&src_hndl_da);
+}
+
+static int canvas_delete_until(struct canvas *canvas, struct canvas_checkpoint checkpt)
+{
+	int dstroke = canvas->stroke_store.desc_da->count - checkpt.stroke_count,
+	    dtext   = canvas->text_store.text_da->count - checkpt.text_count, 
+	    dgroup  = canvas->group_store.group_da->count - checkpt.group_count;
+
+	if (dstroke < 0 || dtext < 0 || dgroup < 0) return -1;
+
+	stroke_store_delete_by(&canvas->stroke_store, dstroke);
+	text_store_delete_by(&canvas->text_store, dtext);
+
+	while (dgroup > 0) {
+		canvas_group_delete_last(canvas);
+		dgroup--;
+	}
+
+	return 0;
+}
+
+static int canvas_restore_until(struct canvas *canvas, struct canvas_checkpoint checkpt)
+{
+	int dstroke = checkpt.stroke_count - canvas->stroke_store.desc_da->count,
+	    dtext   = checkpt.text_count - canvas->text_store.text_da->count,
+	    dgroup  = checkpt.group_count - canvas->group_store.group_da->count;
+
+	if (dstroke < 0 || dtext < 0 || dgroup < 0) return -1;
+
+	stroke_store_restore_by(&canvas->stroke_store, dstroke);
+	text_store_restore_by(&canvas->text_store, dtext);
+
+	while (dgroup > 0) {
+		canvas_group_restore_last(canvas);
+		dgroup--;
+	}
+
+	return 0;
+}
+
+static void canvas_reset(struct canvas *canvas)
+{
+	canvas_delete_until(canvas, canvas_checkpoint_make_blank());
+}
+
+static int canvas_object_count(struct canvas *canvas)
+{
+	int stroke = canvas->stroke_store.desc_da->count,
+	    text   = canvas->text_store.text_da->count,
+	    group  = canvas->group_store.group_da->count;
+	return stroke + text + group;
 }
 
 /* ==============================
@@ -747,11 +983,6 @@ static void canvas_group_set_deleted(struct canvas *canvas, int id, bool deleted
 static void canvas_cmd_cleanup(struct canvas_cmd *cmd)
 {
 	switch (cmd->kind) {
-	case CANVAS_CMD_STROKE_CREATE:
-	case CANVAS_CMD_TEXT_CREATE:
-	case CANVAS_CMD_OBJECT_GROUP:
-		break;
-	case CANVAS_CMD_GROUP_DELETE: break;
 	case CANVAS_CMD_OBJECT_DELETE:
 		free(cmd->v.objs.hndls);
 		break;
@@ -768,6 +999,9 @@ static void canvas_cmd_undo(struct canvas_cmd c, struct canvas *canvas)
 	size_t i;
 
 	switch (c.kind) {
+	case CANVAS_CMD_COPY_DST:
+		canvas_delete_until(canvas, c.v.copy_dst.chkpt_before);
+		break;
 	case CANVAS_CMD_OBJECT_DELETE:
 		for (i = 0; i < c.v.objs.count; i++) {
 			canvas_object_set_deleted(canvas, c.v.objs.hndls[i], false);
@@ -785,10 +1019,10 @@ static void canvas_cmd_undo(struct canvas_cmd c, struct canvas *canvas)
 		canvas_group_delete_last(canvas);
 		break;
 	case CANVAS_CMD_STROKE_CREATE:
-		stroke_store_delete_last(&canvas->stroke_store);
+		stroke_store_delete_by(&canvas->stroke_store, 1);
 		break;
 	case CANVAS_CMD_TEXT_CREATE:
-		text_store_delete_last(&canvas->text_store);
+		text_store_delete_by(&canvas->text_store, 1);
 		break;
 	default: break;
 	}
@@ -799,6 +1033,9 @@ static void canvas_cmd_redo(struct canvas_cmd c, struct canvas *canvas)
 	size_t i;
 
 	switch (c.kind) {
+	case CANVAS_CMD_COPY_DST:
+		canvas_restore_until(canvas, c.v.copy_dst.chkpt_after);
+		break;
 	case CANVAS_CMD_OBJECT_DELETE:
 		for (i = 0; i < c.v.objs.count; i++) {
 			canvas_object_set_deleted(canvas, c.v.objs.hndls[i], true);
@@ -816,10 +1053,10 @@ static void canvas_cmd_redo(struct canvas_cmd c, struct canvas *canvas)
 		canvas_group_restore_last(canvas);
 		break;
 	case CANVAS_CMD_STROKE_CREATE:
-		stroke_store_restore_last(&canvas->stroke_store);
+		stroke_store_restore_by(&canvas->stroke_store, 1);
 		break;
 	case CANVAS_CMD_TEXT_CREATE:
-		text_store_restore_last(&canvas->text_store);
+		text_store_restore_by(&canvas->text_store, 1);
 		break;
 	default: break;
 	}

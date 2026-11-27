@@ -5,6 +5,20 @@
 #include <string.h>
 #include <assert.h>
 
+#if defined(__x86_64__) || defined(_M_X64)
+	#define ARCH_STR "x64"
+#elif defined(__i386__) || defined(_M_IX86)
+	#define ARCH_STR "x86"
+#else
+	#define ARCH_STR "unknown"
+#endif
+
+#if defined(_WIN32)
+	#define OS_STR "Windows"
+#else
+	#define OS_STR "Unix"
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
 	#define NO_DISCARD __attribute__((warn_unused_result))
 #elif __STDC_VERSION__ >= 202311L

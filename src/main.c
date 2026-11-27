@@ -26,6 +26,7 @@
 #define STATUS_LINE_MAX 512
 #define PEN_PT_INIT { .coord = { FLT_MAX, FLT_MAX }, .pressure = .5 }
 #define FONT_SIZE_DEFAULT 64.0
+#define DRAWIT_VER "v0.2.999"
 
 /* ==============================
  * CORE DATA STRUCTURES 
@@ -89,16 +90,16 @@ struct status_line {
 };
 
 enum select_state {
-	SELECT_STATE_SINGLE,
-	SELECT_STATE_BOX,
+	SELECT_HOVER_ONE,
+	SELECT_MULTI_ONGOING,
+	SELECT_MULTI_FINISH,
 };
 
 struct drawit_ctx {
 	struct graphic_ctx       gfx;
 
 	enum theme               theme;
-	enum mode                mode;
-	enum mode                exit_mode;
+	enum mode                mode, exit_mode;
 
 	struct status_line       status_line;
 
@@ -108,7 +109,6 @@ struct drawit_ctx {
 	struct da_object_handle *selection_da;
 	vec2                     select_anchor;
 	rect                     select_rect;
-	bool                     is_selecting_rect;
 
 	bool                     hide_selection_outline;
 
@@ -121,6 +121,8 @@ struct drawit_ctx {
 
 	struct canvas            canvas;
 	struct canvas_hist       hist;
+
+	struct canvas            copy_buffer;
 };
 
 /* GLOBALS */
@@ -265,7 +267,7 @@ static void drawit_group_owned(struct drawit_ctx *drawit, struct object_handle *
 	struct canvas *canvas = &drawit->canvas;
 	struct canvas_hist *hist = &drawit->hist;
 
-	if (canvas_object_group_owned(canvas, hndls, count) != 0) {
+	if (canvas_object_group_owned(canvas, hndls, count) < 0) {
 		free(hndls);
 		return;
 	}
@@ -278,6 +280,7 @@ static void drawit_delete_group(struct drawit_ctx *drawit)
 	struct canvas *canvas = &drawit->canvas;
 	struct canvas_hist *hist = &drawit->hist;
 
+	if (!g_drawit.selection_da->count) return;
 	if (selection_da->elems[0].kind != OBJECT_KIND_GROUP) return;
 
 	canvas_group_set_deleted(canvas, selection_da->elems[0].id, true);
@@ -285,6 +288,56 @@ static void drawit_delete_group(struct drawit_ctx *drawit)
 	selection_da->count = 0;
 }
 
+static void drawit_copy_selection(struct drawit_ctx *drawit)
+{
+	struct da_object_handle *selection_da = drawit->selection_da;
+	struct canvas *canvas = &drawit->canvas;
+	struct canvas *copy_buffer = &drawit->copy_buffer;
+
+	if (!selection_da->count) return;
+
+	canvas_reset(copy_buffer);
+	canvas_objects_copy(copy_buffer, canvas,
+	                     selection_da->elems, selection_da->count, NULL);
+
+	g_drawit.selection_da->count = 0;
+	status_line_set(&drawit->status_line, 1, "Copied %d objects.", canvas_object_count(copy_buffer));
+}
+
+static int drawit_paste(struct drawit_ctx *drawit)
+{
+	struct da_object_handle **selection_da = &drawit->selection_da;
+	struct canvas_hist *hist = &drawit->hist;
+	struct canvas *canvas = &drawit->canvas;
+	struct canvas *copy_buffer = &drawit->copy_buffer;
+	struct mouse *mouse = &drawit->gfx.mouse;
+	struct canvas_cmd cmd;
+	rect selection_bounds;
+	vec2 d;
+
+	if (!canvas_object_count(copy_buffer)) {
+		status_line_set(&drawit->status_line, 1, "Copy buffer empty.");
+		return -1;
+	}
+
+	cmd.kind = CANVAS_CMD_COPY_DST;
+	cmd.v.copy_dst.chkpt_before = canvas_checkpoint_make(canvas);
+
+	(*selection_da)->count = 0;
+	canvas_object_copy_all(canvas, copy_buffer, selection_da);
+
+	selection_bounds = canvas_objects_global_bounds(canvas, (*selection_da)->elems,
+	                                                (*selection_da)->count);
+	d = vec2_sub(mouse->world, (vec2) { .x = selection_bounds.x0,
+	                                    .y = selection_bounds.y0 } );
+	canvas_objects_transl(canvas, (*selection_da)->elems, (*selection_da)->count, d);
+
+	cmd.v.copy_dst.chkpt_after = canvas_checkpoint_make(canvas);
+	canvas_hist_record(hist, cmd);
+
+	status_line_set(&drawit->status_line, 1, "Pasted %d objects.", canvas_object_count(copy_buffer));
+	return 0;
+}
 
 /* ==============================
  * MODES
@@ -452,6 +505,19 @@ static void mode_normal_event(const sapp_event *e)
 				status_line_set(status, 1, "Begin Group");
 			}
 			break;
+		case SAPP_KEYCODE_C:
+			if (!(e->modifiers & SAPP_MODIFIER_CTRL)) break;
+			if (e->key_repeat) break;
+			
+			if (drawit_select_mouse(&g_drawit) != 0) break;
+			drawit_copy_selection(&g_drawit);
+			break;
+		case SAPP_KEYCODE_V:
+			if (!(e->modifiers & SAPP_MODIFIER_CTRL)) break;
+			if (e->key_repeat) break;
+			drawit_paste(&g_drawit);
+			g_drawit.selection_da->count = 0;
+			break;
 		case SAPP_KEYCODE_M:
 			/* g_drawit.save_idx = g_drawit.hist.cursor; */
 			break;
@@ -483,10 +549,10 @@ static void mode_select_event(const sapp_event *e)
 	struct object_handle *hndls;
 
 	switch(g_drawit.select_state) {
-	case SELECT_STATE_SINGLE:
+	case SELECT_HOVER_ONE:
 		drawit_select_mouse(&g_drawit);
 		break;
-	case SELECT_STATE_BOX:
+	case SELECT_MULTI_ONGOING:
 		drawit_select_rect(&g_drawit);
 		break;
 	default: break;
@@ -494,25 +560,26 @@ static void mode_select_event(const sapp_event *e)
 
 	switch (e->type) {
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
-		g_drawit.select_state = SELECT_STATE_BOX;
+		g_drawit.select_state = SELECT_MULTI_ONGOING;
 		g_drawit.select_anchor = mouse->world;
 		g_drawit.select_rect = rect_fit2(mouse->world, mouse->world);
-		g_drawit.is_selecting_rect = true;
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
-		if (!g_drawit.is_selecting_rect) break;
-		g_drawit.select_rect = rect_fit2(g_drawit.select_anchor, mouse->world);
+		if (g_drawit.select_state == SELECT_MULTI_ONGOING) {
+			g_drawit.select_rect = rect_fit2(g_drawit.select_anchor, mouse->world);
+		}
 		break;
 	case SAPP_EVENTTYPE_MOUSE_UP:
-		if (!g_drawit.selection_da->count) {
-			g_drawit.select_state = SELECT_STATE_SINGLE;
+		if (g_drawit.selection_da->count) {
+			g_drawit.select_state = SELECT_MULTI_FINISH;
+		} else {
+			g_drawit.select_state = SELECT_HOVER_ONE;
 		}
-		g_drawit.is_selecting_rect = false;
 		break;
 	default: break;
 	}
 
-	if (g_drawit.is_selecting_rect) return;
+	if (g_drawit.select_state == SELECT_MULTI_ONGOING) return;
 
 	switch (e->type) {
 	case SAPP_EVENTTYPE_KEY_DOWN:
@@ -544,15 +611,26 @@ static void mode_select_event(const sapp_event *e)
 			if (e->key_repeat) break;
 
 			if (e->modifiers & SAPP_MODIFIER_SHIFT) {
-				if (!g_drawit.selection_da->count) break;
 				drawit_delete_group(&g_drawit);
 			} else if (g_drawit.selection_da->count) {
 				hndls = da_object_handle_elemdup(g_drawit.selection_da);
 				drawit_group_owned(&g_drawit, hndls, g_drawit.selection_da->count);
 			}
 			break;
+		case SAPP_KEYCODE_C:
+			if (!(e->modifiers & SAPP_MODIFIER_CTRL)) break;
+			if (e->key_repeat) break;
+			drawit_copy_selection(&g_drawit);
+			g_drawit.select_state = SELECT_HOVER_ONE;
+			break;
+		case SAPP_KEYCODE_V:
+			if (!(e->modifiers & SAPP_MODIFIER_CTRL)) break;
+			if (e->key_repeat) break;
+			drawit_paste(&g_drawit);
+			g_drawit.select_state = SELECT_MULTI_FINISH;
+			break;
 		case SAPP_KEYCODE_ESCAPE:
-			g_drawit.select_state = SELECT_STATE_SINGLE;
+			g_drawit.select_state = SELECT_HOVER_ONE;
 			mode_exit();
 			break;
 		default: break;
@@ -578,16 +656,13 @@ static void mode_drag_event(const sapp_event *e)
 	struct mouse *mouse = &g_drawit.gfx.mouse;
 	struct canvas_hist *hist = &g_drawit.hist;
 	struct object_handle *hndls;
-	size_t i;
 	vec2 d;
 
 	switch (e->type) {
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		d = vec2_sub(mouse->world, g_drawit.drag_end);
 
-		for (i = 0; i < selection_da->count; i++) { 
-			canvas_object_transl(canvas, selection_da->elems[i], d);
-		}
+		canvas_objects_transl(canvas, selection_da->elems, selection_da->count, d);
 		g_drawit.drag_end = mouse->world;
 		break;
 
@@ -603,9 +678,7 @@ static void mode_drag_event(const sapp_event *e)
 			break;
 		case SAPP_KEYCODE_ESCAPE:
 			d = vec2_sub(g_drawit.drag_start, g_drawit.drag_end);
-			for (i = 0; i < selection_da->count; i++) { 
-				canvas_object_transl(canvas, selection_da->elems[i], d);
-			}
+			canvas_objects_transl(canvas, selection_da->elems, selection_da->count, d);
 			mode_exit();
 		default: break;
 		}
@@ -698,7 +771,7 @@ static void command_exec(const char *str)
 		} else if (drawit_strcasecmp(str, "quit") == 0) {
 			sapp_request_quit();
 		} else if (drawit_strcasecmp(str, "meta") == 0) {
-			status_line_set(status, 0, "Compiled on " __DATE__ " " __TIME__);
+			status_line_set(status, 0, "Drawit "DRAWIT_VER" compiled on " __DATE__ " for "OS_STR" "ARCH_STR);
 		} else if (drawit_strcasecmp(str, "selout") == 0) {
 			g_drawit.hide_selection_outline = !g_drawit.hide_selection_outline;
 			status_line_set(status, 0, "toggle selection outline");
@@ -1063,6 +1136,8 @@ void init(void)
 
 	g_drawit.canvas = canvas_create_empty();
 	g_drawit.hist.canvas = &g_drawit.canvas;
+	g_drawit.copy_buffer = canvas_create_empty();
+
 	da_object_handle_create(&g_drawit.selection_da, DA_INITIAL_CAPACITY);
 
 	pen->colors_primary = COLORS_YELLOW;
@@ -1197,7 +1272,7 @@ void frame(void)
 			draw_text_store(gfx, &canvas->text_store, g_drawit.theme, g_drawit.active_text_id);
 			if (!g_drawit.hide_selection_outline)
 				draw_selected_bounds(gfx, canvas, g_drawit.selection_da, g_drawit.theme);
-			if (g_drawit.is_selecting_rect)
+			if (g_drawit.select_state == SELECT_MULTI_ONGOING)
 				draw_bounds(gfx, g_drawit.select_rect, COLORS_SELECT[g_drawit.theme]);
 
 		nvgRestore(gfx->vg);

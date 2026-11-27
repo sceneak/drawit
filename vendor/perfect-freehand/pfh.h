@@ -45,6 +45,7 @@ typedef struct {
 
 void pfh_vec2_buf_init(pfh_vec2_buf *buf, size_t capacity);
 void pfh_vec2_buf_deinit(pfh_vec2_buf *buf);
+void pfh_vec2_buf_push_n(pfh_vec2_buf *buf, pfh_vec2 *elems, size_t n);
 
 void pfh_stroke_point_buf_init(pfh_stroke_point_buf *buf, size_t capacity);
 void pfh_stroke_point_buf_deinit(pfh_stroke_point_buf *buf);
@@ -148,6 +149,13 @@ static pfh_stroke_point_buf pfh_buf_stroke_pts = {0};
 
 void pfh_vec2_buf_init(pfh_vec2_buf *buf, size_t capacity) { pfh_buf_init(buf, capacity); }
 void pfh_vec2_buf_deinit(pfh_vec2_buf *buf) { pfh_buf_deinit(buf); }
+void pfh_vec2_buf_push_n(pfh_vec2_buf *buf, pfh_vec2 *elems, size_t n)
+{
+	pfh_buf_reserve(buf, buf->count + n);
+	memcpy(buf->elems + buf->count, elems, n * sizeof(*elems));
+	buf->count += n;
+}
+
 void pfh_stroke_point_buf_init(pfh_stroke_point_buf *buf, size_t capacity) { pfh_buf_init(buf, capacity); }
 void pfh_stroke_point_buf_deinit(pfh_stroke_point_buf *buf) { pfh_buf_deinit(buf); }
 

@@ -124,6 +124,13 @@ static inline void gapbuf_destroy(struct gapbuf **buf)
 	*buf = NULL;
 }
 
+static inline struct gapbuf *gapbuf_copy(struct gapbuf *buf)
+{
+	struct gapbuf *copy = gapbuf_create(buf->capacity);
+	memcpy(copy, buf, sizeof(struct gapbuf) + buf->capacity);
+	return copy;
+}
+
 static inline size_t gapbuf_suffix_len(const struct gapbuf *buf)
 {
 	return buf->capacity - buf->gap_end;
