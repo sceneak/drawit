@@ -1,15 +1,29 @@
 # Todo
+[v] SELECT & NORMAL keyup W to release drag
+[v] SELECT mode left click to drag obj
+[] 
 [] Edit text
-[] Change text / stroke colors
-[] Change text / stroke / group size
-[] MID mouse to drag
+[] Change obj colors
+[] Change obj size
+[] Change obj opacity
 [] Canvas Serialization
-[] Readme & Alpha release update
 
 # Future
-[] Profile
+[] Trim down GLAD size
+[] Status Line Messages for delete, drag, undo/redo
 [] Image objects
+[] Locking objects
+
+[] Enrich Text Mode
+[] Keyboard spatial navigation in canvas
+
 [] Object Presets
 [] Animate
-[] Status Line Messages for delete, drag, undo/redo
+
 [] Radial Pie Menu for Mouse
+[] Profile
+[] View Culling
+[] Cache to texture
+[] Memory Compaction
+[] Multiply MIN_PX by zoom / stroke size
+[] Fun DVD Screensaver

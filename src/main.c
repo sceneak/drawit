@@ -221,13 +221,8 @@ static int drawit_select_mouse(struct drawit_ctx *drawit)
 	struct canvas *canvas = &drawit->canvas;
 	struct mouse *mouse = &drawit->gfx.mouse;
 
-	if (!(*selection)->count) {
-		da_object_handle_append_empty(selection, 1);
-	} else if ((*selection)->count > 1) {
-		(*selection)->count = 1;
-	}
-
-	(*selection)->elems[0] = canvas_object_hit(canvas, mouse->world);
+	(*selection)->count = 0;
+	da_object_handle_append(selection, canvas_object_hit(canvas, mouse->world));
 
 	if ((*selection)->elems[0].kind == OBJECT_KIND_NONE) {
 		(*selection)->count = 0;
@@ -243,6 +238,18 @@ static void drawit_select_rect(struct drawit_ctx *drawit)
 
 	(*selection)->count = 0;
 	canvas_object_hit_rect(canvas, selection, drawit->select_rect);
+}
+
+static void drawit_drag_commit(struct drawit_ctx *drawit)
+{
+	struct canvas_hist *hist = &drawit->hist;
+	struct object_handle *hndls;
+	vec2 d;
+
+	d = vec2_sub(drawit->drag_end, drawit->drag_start);
+	hndls = da_object_handle_elemdup(drawit->selection_da);
+
+	canvas_hist_record(hist, canvas_cmd_drag_make(hndls, drawit->selection_da->count, d));
 }
 
 static void drawit_delete_selection(struct drawit_ctx *drawit)
@@ -262,16 +269,20 @@ static void drawit_delete_selection(struct drawit_ctx *drawit)
 	selection_da->count = 0;
 }
 
-static void drawit_group_owned(struct drawit_ctx *drawit, struct object_handle *hndls, size_t count)
+static struct object_handle drawit_group_owned(struct drawit_ctx *drawit, struct object_handle *hndls, size_t count)
 {
 	struct canvas *canvas = &drawit->canvas;
 	struct canvas_hist *hist = &drawit->hist;
+	int id;
 
-	if (canvas_object_group_owned(canvas, hndls, count) < 0) {
+	id = canvas_object_group_owned(canvas, hndls, count);
+	if (id < 0) {
 		free(hndls);
-		return;
+		return HANDLE_DEFAULT;
 	}
 	canvas_hist_record(hist, canvas_cmd_make(CANVAS_CMD_OBJECT_GROUP));
+
+	return (struct object_handle) { .id = id, .kind = OBJECT_KIND_GROUP };
 }
 
 static void drawit_delete_group(struct drawit_ctx *drawit)
@@ -546,6 +557,7 @@ static void mode_enter_normal(void)
 static void mode_select_event(const sapp_event *e)
 {
 	struct mouse *mouse = &g_drawit.gfx.mouse;
+	struct object_handle hndl;
 	struct object_handle *hndls;
 
 	switch(g_drawit.select_state) {
@@ -560,9 +572,16 @@ static void mode_select_event(const sapp_event *e)
 
 	switch (e->type) {
 	case SAPP_EVENTTYPE_MOUSE_DOWN:
-		g_drawit.select_state = SELECT_MULTI_ONGOING;
+		hndl = canvas_object_hit(&g_drawit.canvas, mouse->world);
+		if (hndl.kind != OBJECT_KIND_NONE) {
+			mode_exit_set();
+			mode_enter_drag();
+			break;
+		}
+
+		g_drawit.select_state  = SELECT_MULTI_ONGOING;
 		g_drawit.select_anchor = mouse->world;
-		g_drawit.select_rect = rect_fit2(mouse->world, mouse->world);
+		g_drawit.select_rect   = rect_fit2(mouse->world, mouse->world);
 		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		if (g_drawit.select_state == SELECT_MULTI_ONGOING) {
@@ -612,9 +631,12 @@ static void mode_select_event(const sapp_event *e)
 
 			if (e->modifiers & SAPP_MODIFIER_SHIFT) {
 				drawit_delete_group(&g_drawit);
-			} else if (g_drawit.selection_da->count) {
+				g_drawit.select_state = SELECT_HOVER_ONE;
+			} else if (g_drawit.selection_da->count > 1) {
 				hndls = da_object_handle_elemdup(g_drawit.selection_da);
-				drawit_group_owned(&g_drawit, hndls, g_drawit.selection_da->count);
+				hndl = drawit_group_owned(&g_drawit, hndls, g_drawit.selection_da->count);
+				g_drawit.selection_da->count = 0;
+				da_object_handle_append(&g_drawit.selection_da, hndl);
 			}
 			break;
 		case SAPP_KEYCODE_C:
@@ -654,28 +676,35 @@ static void mode_drag_event(const sapp_event *e)
 	struct da_object_handle *selection_da = g_drawit.selection_da;
 	struct canvas *canvas = &g_drawit.canvas;
 	struct mouse *mouse = &g_drawit.gfx.mouse;
-	struct canvas_hist *hist = &g_drawit.hist;
-	struct object_handle *hndls;
 	vec2 d;
 
 	switch (e->type) {
+	case SAPP_EVENTTYPE_MOUSE_UP:
+		drawit_drag_commit(&g_drawit);
+		mode_exit();
+		break;
 	case SAPP_EVENTTYPE_MOUSE_MOVE:
 		d = vec2_sub(mouse->world, g_drawit.drag_end);
-
 		canvas_objects_transl(canvas, selection_da->elems, selection_da->count, d);
 		g_drawit.drag_end = mouse->world;
+		break;
+
+	case SAPP_EVENTTYPE_KEY_UP:
+		if (e->key_repeat) break;
+
+		switch (e->key_code) {
+		case SAPP_KEYCODE_W:
+			drawit_drag_commit(&g_drawit);
+			mode_exit();
+			break;
+		default: break;
+		}
 		break;
 
 	case SAPP_EVENTTYPE_KEY_DOWN:
 		if (e->key_repeat) break;
 
 		switch (e->key_code) {
-		case SAPP_KEYCODE_W:
-			d = vec2_sub(g_drawit.drag_end, g_drawit.drag_start);
-			hndls = da_object_handle_elemdup(selection_da);
-			canvas_hist_record(hist, canvas_cmd_drag_make(hndls, selection_da->count, d));
-			mode_exit();
-			break;
 		case SAPP_KEYCODE_ESCAPE:
 			d = vec2_sub(g_drawit.drag_start, g_drawit.drag_end);
 			canvas_objects_transl(canvas, selection_da->elems, selection_da->count, d);

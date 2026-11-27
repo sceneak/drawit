@@ -343,7 +343,7 @@ static float stroke_store_dist(const struct stroke_store *store, int id, vec2 v)
 
 static struct object_handle stroke_store_hit_nearest(const struct stroke_store *store,
                                                      vec2 v, float *dist2_out,
-                                                     bool root_only)
+                                                     int group_id)
 {
 	struct stroke_desc *desc;
 	rect global_bounds;
@@ -356,7 +356,7 @@ static struct object_handle stroke_store_hit_nearest(const struct stroke_store *
 	for (i = 0; i < store->desc_da->count; i++) {
 		desc = store->desc_da->elems + i;
 		if (desc->obj.deleted) continue;
-		if (desc->obj.group_id != -1 && root_only) continue;
+		if (desc->obj.group_id != group_id) continue;
 
 		global_bounds = rect_transl(desc->obj.bounds, desc->obj.transl);
 		if (!rect_contains(global_bounds, v))
@@ -377,7 +377,7 @@ static struct object_handle stroke_store_hit_nearest(const struct stroke_store *
 
 static void stroke_store_hit_rect(const struct stroke_store *store,
                                   struct da_object_handle **hndls,
-                                  rect r, bool root_only)
+                                  rect r, int group_id)
 {
 	struct stroke_desc *desc;
 	rect global_bounds;
@@ -386,7 +386,7 @@ static void stroke_store_hit_rect(const struct stroke_store *store,
 	for (i = 0; i < store->desc_da->count; i++) {
 		desc = store->desc_da->elems + i;
 		if (desc->obj.deleted) continue;
-		if (desc->obj.group_id != -1 && root_only) continue;
+		if (desc->obj.group_id != group_id) continue;
 
 		global_bounds = rect_transl(desc->obj.bounds, desc->obj.transl);
 		if (!rect_overlaps(global_bounds, r)) continue;
@@ -527,7 +527,7 @@ static void text_store_get_group(const struct text_store *store, int group_id, s
 }
 
 static struct object_handle text_store_hit(const struct text_store *store,
-                                           vec2 v, bool root_only)
+                                           vec2 v, int group_id)
 {
 	struct text_obj *txt;
 	rect global_bounds;
@@ -536,7 +536,7 @@ static struct object_handle text_store_hit(const struct text_store *store,
 	for (i = 0; i < store->text_da->count; i++) {
 		txt = store->text_da->elems + i;
 		if (txt->obj.deleted) continue;
-		if (txt->obj.group_id != -1 && root_only) continue;
+		if (txt->obj.group_id != group_id) continue;
 
 		global_bounds = rect_transl(txt->obj.bounds, txt->obj.transl);
 		if (!rect_contains(global_bounds, v)) continue;
@@ -548,7 +548,7 @@ static struct object_handle text_store_hit(const struct text_store *store,
 
 static void text_store_hit_rect(const struct text_store *store,
                                 struct da_object_handle **hndl_da,
-                                rect r, bool root_only)
+                                rect r, int group_id)
 {
 	struct text_obj *txt;
 	rect global_bounds;
@@ -557,7 +557,7 @@ static void text_store_hit_rect(const struct text_store *store,
 	for (i = 0; i < store->text_da->count; i++) {
 		txt = store->text_da->elems + i;
 		if (txt->obj.deleted) continue;
-		if (txt->obj.group_id != -1 && root_only) continue;
+		if (txt->obj.group_id != group_id) continue;
 
 		global_bounds = rect_transl(txt->obj.bounds, txt->obj.transl);
 		if (!rect_overlaps(global_bounds, r)) continue;
@@ -618,7 +618,7 @@ static void group_store_get_group(const struct group_store *store, int group_id,
 }
 
 static struct object_handle group_store_hit(const struct group_store *store,
-                                            vec2 v, bool root_only)
+                                            vec2 v, int group_id)
 {
 	struct group *grp;
 	rect global_bounds;
@@ -627,7 +627,7 @@ static struct object_handle group_store_hit(const struct group_store *store,
 	for (i = 0; i < store->group_da->count; i++) {
 		grp = store->group_da->elems + i;
 		if (grp->obj.deleted) continue;
-		if (grp->obj.group_id != -1 && root_only) continue;
+		if (grp->obj.group_id != group_id) continue;
 
 		global_bounds = rect_transl(grp->obj.bounds, grp->obj.transl);
 		if (!rect_contains(global_bounds, v)) continue;
@@ -639,7 +639,7 @@ static struct object_handle group_store_hit(const struct group_store *store,
 
 static void group_store_hit_rect(const struct group_store *store,
                                  struct da_object_handle **hndl_da,
-                                 rect r, bool root_only)
+                                 rect r, int group_id)
 {
 	struct group *grp;
 	rect global_bounds;
@@ -648,7 +648,7 @@ static void group_store_hit_rect(const struct group_store *store,
 	for (i = 0; i < store->group_da->count; i++) {
 		grp = store->group_da->elems + i;
 		if (grp->obj.deleted) continue;
-		if (grp->obj.group_id != -1 && root_only) continue;
+		if (grp->obj.group_id != group_id) continue;
 
 		global_bounds = rect_transl(grp->obj.bounds, grp->obj.transl);
 		if (!rect_overlaps(global_bounds, r)) continue;
@@ -715,8 +715,8 @@ static int canvas_objects_created_after(const struct canvas *canvas, struct canv
 	return 0;
 }
 
-static void canvas_object_set_deleted(struct canvas *canvas,
-                                      struct object_handle hndl, bool deleted)
+static void canvas_object__set_deleted(struct canvas *canvas,
+                                       struct object_handle hndl, bool deleted)
 {
 	struct object_data *obj = canvas_object_get(canvas, hndl);
 	struct group *group;
@@ -728,8 +728,19 @@ static void canvas_object_set_deleted(struct canvas *canvas,
 
 	group = canvas->group_store.group_da->elems + hndl.id;
 	for (i = 0; i < group->member_count; i++) {
-		canvas_object_set_deleted(canvas, group->members[i], deleted);
+		canvas_object__set_deleted(canvas, group->members[i], deleted);
 	}
+}
+
+/* non-root objects can't be deleted,
+   selection wouldn't allow for this anyways */
+static int canvas_object_set_deleted(struct canvas *canvas,
+                                      struct object_handle hndl, bool deleted)
+{
+	struct object_data *obj = canvas_object_get(canvas, hndl);
+	if (obj->group_id != -1) return -1;
+	canvas_object__set_deleted(canvas, hndl, deleted);
+	return 0;
 }
 
 static void canvas_object_transl(struct canvas *canvas, struct object_handle hndl, vec2 d)
@@ -761,12 +772,12 @@ static struct object_handle canvas_object_hit(struct canvas *canvas, vec2 v)
 {
 	struct object_handle hndl;
 
-	hndl = group_store_hit(&canvas->group_store, v, true);
+	hndl = stroke_store_hit_nearest(&canvas->stroke_store, v, NULL, -1);
 	if (hndl.kind == OBJECT_KIND_NONE) {
-		hndl = text_store_hit(&canvas->text_store, v, true);
+		hndl = text_store_hit(&canvas->text_store, v, -1);
 	}
 	if (hndl.kind == OBJECT_KIND_NONE) {
-		hndl = stroke_store_hit_nearest(&canvas->stroke_store, v, NULL, true);
+		hndl = group_store_hit(&canvas->group_store, v, -1);
 	}
 	return hndl;
 }
@@ -774,9 +785,9 @@ static struct object_handle canvas_object_hit(struct canvas *canvas, vec2 v)
 static void canvas_object_hit_rect(struct canvas *canvas,
                                    struct da_object_handle **hndl_da, rect r)
 {
-	group_store_hit_rect(&canvas->group_store, hndl_da, r, true);
-	text_store_hit_rect(&canvas->text_store, hndl_da, r, true);
-	stroke_store_hit_rect(&canvas->stroke_store, hndl_da, r, true);
+	stroke_store_hit_rect(&canvas->stroke_store, hndl_da, r, -1);
+	text_store_hit_rect(&canvas->text_store, hndl_da, r, -1);
+	group_store_hit_rect(&canvas->group_store, hndl_da, r, -1);
 }
 
 /* CANVAS OBJ GROUPING */
@@ -856,7 +867,10 @@ static void canvas_group_set_deleted(struct canvas *canvas, int id, bool deleted
 {
 	struct da_group *group_da = canvas->group_store.group_da;
 	group_da->elems[id].obj.deleted = deleted;
-	canvas_group__unset_members_group(canvas, id);
+	if (deleted)
+		canvas_group__unset_members_group(canvas, id);
+	else
+		canvas_group__set_members_group(canvas, id);
 }
 
 /* CANVAS COPY */
@@ -881,7 +895,7 @@ static struct object_handle canvas_object_copy(struct canvas *dst, const struct 
 			new_members[i] = canvas_object_copy(dst, src, grp->members[i]);
 		}
 
-		/* groups aren't copied, but recreated */
+		/* groups aren't copied, but recreated. */
 		id = canvas_object_group_owned(dst, new_members, grp->member_count);
 		if (id >= 0) {
 			return (struct object_handle){ .kind = OBJECT_KIND_GROUP, .id = id };
