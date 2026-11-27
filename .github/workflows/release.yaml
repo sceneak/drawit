@@ -1,0 +1,63 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            ext: ""
+            shell: bash
+          - os: windows-latest
+            target: windows-x64
+            ext: ".exe"
+            shell: cmd # unfortunately the makefile expects this
+
+    runs-on: ${{ matrix.os }}
+    defaults:
+          run:
+            shell: ${{ matrix.shell }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Linux Deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libx11-dev libxi-dev libxcursor-dev
+
+      - name: Build Binary
+        run: make BUILD=RELEASE TARGET=drawit-${{ matrix.target }} SHELL=${{ matrix.shell }}
+
+      - name: Stage Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: drawit-${{ matrix.target }}
+          path: build/drawit-${{ matrix.target }}${{ matrix.ext }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -1,4 +1,4 @@
-TARGET = drawit
+TARGET ?= drawit
 CC = gcc
 SRC_DIR = src
 VENDOR_DIR = vendor
@@ -28,7 +28,7 @@ ifeq ($(OS), Windows_NT)
 
 	PREFIX ?= $(LOCALAPPDATA)/Programs/$(TARGET)
 	BINDIR ?= $(PREFIX)
-	INSTALL_BIN = $(BINDIR)/$(TARGET).exe
+	INSTALL_BIN = $(BINDIR)/$(TARGET)
 	WIN_BINDIR = $(subst /,\,$(BINDIR))
 	WIN_SRC = $(subst /,\,$(TARGET_BIN))
 	WIN_DST = $(subst /,\,$(INSTALL_BIN))
@@ -83,6 +83,7 @@ $(TARGET_BIN): $(OBJS)
 	$(CC) $(OBJS) -o $@ $(LDFLAGS) $(LIBS)
 
 $(RES_OBJ): ./resources.rc
+	$(MD)
 	windres ./resources.rc -O coff -o $(RES_OBJ) 
 
 $(BUILD_DIR)/%.o: %.c 
