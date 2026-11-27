@@ -1,6 +1,4 @@
 # Todo
-[v] Canvas.h Separation
-[] Copy Paste Objects
 [] Edit text
 [] Change text / stroke colors
 [] Change text / stroke / group size
@@ -14,3 +12,4 @@
 [] Object Presets
 [] Animate
 [] Status Line Messages for delete, drag, undo/redo
+[] Radial Pie Menu for Mouse

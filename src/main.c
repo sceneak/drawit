@@ -26,7 +26,7 @@
 #define STATUS_LINE_MAX 512
 #define PEN_PT_INIT { .coord = { FLT_MAX, FLT_MAX }, .pressure = .5 }
 #define FONT_SIZE_DEFAULT 64.0
-#define DRAWIT_VER "v0.2.999"
+#define DRAWIT_VER "v0.3.0-alpha"
 
 /* ==============================
  * CORE DATA STRUCTURES 
@@ -771,7 +771,7 @@ static void command_exec(const char *str)
 		} else if (drawit_strcasecmp(str, "quit") == 0) {
 			sapp_request_quit();
 		} else if (drawit_strcasecmp(str, "meta") == 0) {
-			status_line_set(status, 0, "Drawit "DRAWIT_VER" compiled on " __DATE__ " for "OS_STR" "ARCH_STR);
+			status_line_set(status, 0, "Drawit "DRAWIT_VER" - Compiled on " __DATE__ " for "OS_STR" "ARCH_STR);
 		} else if (drawit_strcasecmp(str, "selout") == 0) {
 			g_drawit.hide_selection_outline = !g_drawit.hide_selection_outline;
 			status_line_set(status, 0, "toggle selection outline");
